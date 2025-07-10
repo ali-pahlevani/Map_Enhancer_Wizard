@@ -47,13 +47,13 @@ The wizard will guide you through the process of enhancing your map, allowing yo
 Below are example collages demonstrating the enhancement results. Each collage includes four images: two showing the occupancy map before and after enhancement, and two showing the corresponding cost maps before and after enhancement.
 
 ### Example 1
-![Example 1: Occupancy and Cost Map Enhancement](https://github.com/user-attachments/assets/ded04be2-abaa-448c-8ec7-2cfc39b04549)
+![Example 1: Occupancy and Cost Map Enhancement](https://github.com/user-attachments/assets/4149fe0b-3bf4-4f04-b520-a2f0fa883235)
 
 ### Example 2
-![Example 2: Occupancy and Cost Map Enhancement](https://github.com/user-attachments/assets/4070764a-351f-4b6f-8363-0dde6a07880b)
+![Example 2: Occupancy and Cost Map Enhancement](https://github.com/user-attachments/assets/0fe744f3-6ae5-4f06-a868-0dde060fb924)
 
 ### Example 3
-![Example 3: Occupancy and Cost Map Enhancement](https://github.com/user-attachments/assets/9bec9e25-e18e-4e4a-a52e-d03fecb62ec9)
+![Example 3: Occupancy and Cost Map Enhancement](https://github.com/user-attachments/assets/608c0558-aa63-478e-a97b-4ef6fc729e13)
 
 ## Limitations and Known Issues
 
