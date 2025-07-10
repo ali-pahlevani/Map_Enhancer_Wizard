@@ -9,6 +9,10 @@ This is **version 1** of the tool. Future versions will include:
 - AI-powered enhancements for intelligent map improvements
 - Support for 3D maps
 
+## Preview
+
+![Map Enhancer Wizard Preview](images/preview.png)
+
 ## Dependencies
 
 To use this tool, you need to have the following Python packages installed:
@@ -37,6 +41,19 @@ Follow the on-screen instructions to load your 2D Occupancy Grid map and apply e
 The wizard will guide you through the process of enhancing your map, allowing you to choose from available options and preview changes before saving.
 
 **Note:** Ensure your 2D Occupancy Grid map is in a compatible format. The tool expects maps to be in YAML format, typically with an associated image file (e.g., .pgm).
+
+## Examples
+
+Below are example collages demonstrating the enhancement results. Each collage includes four images: two showing the occupancy map before and after enhancement, and two showing the corresponding cost maps before and after enhancement.
+
+### Example 1
+![Example 1: Occupancy and Cost Map Enhancement](images/example1_collage.png)
+
+### Example 2
+![Example 2: Occupancy and Cost Map Enhancement](images/example2_collage.png)
+
+### Example 3
+![Example 3: Occupancy and Cost Map Enhancement](images/example3_collage.png)
 
 ## Limitations and Known Issues
 
