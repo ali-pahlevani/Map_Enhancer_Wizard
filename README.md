@@ -72,10 +72,10 @@ Contributions are welcome! If you'd like to add new features, fix bugs, or impro
 
 Please ensure your code follows the project's coding standards and includes appropriate tests.
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
 ## Support
 
-If you need help or have questions, please open an issue on the GitHub repository.
+If you have any questions, please let me know: **a.pahlevani1998@gmail.com**
+
++ Also, please don't forget to check out our **website** at: **https://www.SLAMbotics.org**
+
+## Please stay tuned for the next versions of the app.
