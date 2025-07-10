@@ -33,7 +33,7 @@ pip install opencv-python pillow pyyaml numpy
 The main file to run is `map_enhancer_wizard.py`. To start the wizard, simply execute the following command in your terminal:
 
 ```bash
-python map_enhancer_wizard.py
+python3 map_enhancer_wizard.py
 ```
 
 Follow the on-screen **instructions** to load your 2D Occupancy Grid map and apply enhancements.
