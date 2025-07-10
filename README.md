@@ -40,7 +40,7 @@ Follow the on-screen **instructions** to load your 2D Occupancy Grid map and app
 
 The wizard will guide you through the process of enhancing your map, allowing you to choose from available options and preview changes before saving.
 
-+ **Note:** Ensure your 2D Occupancy Grid map is in a compatible format. The tool expects a **.yaml** file along with its corresponding image file (e.g., **.pgm**). Basically, you’ll need to **double-click** and select the folder that **contains both** the .yaml and image files of your map.
++ **Note:** Ensure your 2D Occupancy Grid map is in a compatible format. The tool expects a **.yaml** file along with its corresponding image file (e.g., **.pgm**). Basically, you’ll need to **double-click** and select the folder that **contains both** the .yaml and image file of your map.
 
 ## Examples
 
