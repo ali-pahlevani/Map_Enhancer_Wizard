@@ -30,7 +30,7 @@ pip install opencv-python pillow pyyaml numpy
 
 ## Usage
 
-The main file to run is `map_enhancer_wizard.py`. To start the wizard, simply execute the following command in your terminal:
+The main file to run is `map_enhancer_wizard.py`. To start the wizard, simply execute the following command in your **terminal**:
 
 ```bash
 python3 map_enhancer_wizard.py
