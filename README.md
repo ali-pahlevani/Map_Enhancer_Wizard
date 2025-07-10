@@ -11,7 +11,7 @@ This is **version 1** of the tool. Future versions will include:
 
 ## Preview
 
-![Map Enhancer Wizard Preview](images/preview.png)
+![Map Enhancer Wizard Preview](https://github.com/user-attachments/assets/4dbd4538-ddf7-4dc9-af1a-184c2ab03395)
 
 ## Dependencies
 
