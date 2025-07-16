@@ -8,7 +8,7 @@ This is **version 1** of the tool. Future versions will include:
 - **Automation features** to streamline the enhancement process
 - **AI-powered enhancements** for intelligent map improvements
 - Support for **3D maps**
-
+ 
 ## Preview
 
 ![Map Enhancer Wizard Preview](https://github.com/user-attachments/assets/4dbd4538-ddf7-4dc9-af1a-184c2ab03395)
