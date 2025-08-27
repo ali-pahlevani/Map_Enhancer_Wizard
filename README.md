@@ -1,15 +1,15 @@
 # Map Enhancer Wizard (V1)
 
-**Map Enhancer Wizard** is a tool designed to enhance 2D Occupancy Grid maps, providing users with an easy way to improve the quality and usability of their maps through a user-friendly interface.
+**Map Enhancer Wizard** is a tool designed to enhance 2D Occupancy Grid maps and experimental 3D maps, providing users with an easy way to improve map quality through a user-friendly interface.
 
-Current features include thresholding, blurring, and morphological operations such as opening, closing, dilation, and erosion to correct common mapping artifacts.
+Current features include thresholding, blurring, and morphological operations such as opening, closing, dilation, and erosion to correct common mapping artifacts in 2D maps. A basic 3D viewer is also included that can load `.db` files containing point data.
 
 This is **version 1** of the tool. Future versions will include:
 
 - **Additional filters** for more versatile map enhancements
 - **Automation features** to streamline the enhancement process
 - **AI-powered enhancements** for intelligent map improvements
-- Support for **3D maps**
+- More advanced **3D map** processing
  
 ## Preview
 
@@ -23,11 +23,12 @@ To use this tool, you need to have the following Python packages installed:
 - pillow
 - pyyaml
 - numpy
+- matplotlib *(for the 3D viewer)*
 
 You can install these dependencies using **pip**:
 
 ```bash
-pip install opencv-python pillow pyyaml numpy
+pip install opencv-python pillow pyyaml numpy matplotlib
 ```
 
 ## Usage
@@ -35,14 +36,17 @@ pip install opencv-python pillow pyyaml numpy
 The main file to run is `map_enhancer_wizard.py`. To start the wizard, simply execute the following command in your **terminal**:
 
 ```bash
-python3 map_enhancer_wizard.py
+python3 code/map_enhancer_wizard.py
 ```
 
-Follow the on-screen **instructions** to load your 2D Occupancy Grid map and apply enhancements.
+After launching you can choose between the 2D and 3D modules.
 
-The wizard will guide you through the process of enhancing your map, allowing you to choose from available options and preview changes before saving.
-
-+ **Note:** Ensure your 2D Occupancy Grid map is in a compatible format. The tool expects a **.yaml** file along with its corresponding image file (e.g., **.pgm**). Basically, you’ll need to **double-click** and select the folder that **contains both** the .yaml and image file of your map.
+* For **2D maps**, ensure the selected folder contains a **.yaml** file along with its corresponding image file (e.g., **.pgm**).
+* For **3D maps**, simply provide a SQLite **.db** file. The viewer scans the
+  database for any table containing 3D coordinate columns (`x`, `y`, `z` or
+  `pose_x`, `pose_y`, `pose_z`) and builds a point cloud from it. This makes it
+  possible to load custom point databases as well as maps produced by
+  **RTAB‑Map**.
 
 ## Examples
 
@@ -62,7 +66,9 @@ Below are example collages demonstrating the enhancement results. Each collage i
 As this is version 1, there are some **limitations**:
 
 - Limited set of enhancement filters
-- Only supports 2D Occupancy Grid maps
+- 3D support is minimal and relies on finding coordinate columns in the
+  database; complex RTAB‑Map features like compressed scans are not yet
+  handled
 - No automation or AI features yet
 - May not handle very large maps efficiently
 
