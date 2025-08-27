@@ -2,6 +2,8 @@
 
 **Map Enhancer Wizard** is a tool designed to enhance 2D Occupancy Grid maps, providing users with an easy way to improve the quality and usability of their maps through a user-friendly interface.
 
+Current features include thresholding, blurring, and morphological operations such as opening, closing, dilation, and erosion to correct common mapping artifacts.
+
 This is **version 1** of the tool. Future versions will include:
 
 - **Additional filters** for more versatile map enhancements
