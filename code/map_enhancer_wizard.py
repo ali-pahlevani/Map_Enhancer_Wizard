@@ -45,6 +45,7 @@ class MapEnhancerWizard(tk.Tk):
 
     def init_ui(self):
         self.style = ttk.Style()
+        self.style.theme_use("clam")
         self.style.configure("TButton", font=("Arial", 12, "bold"), foreground="red")
         self.style.configure("TLabel", font=("Arial", 14, "bold"))
 
@@ -113,6 +114,13 @@ class MapEnhancerWizard(tk.Tk):
         ToolTip(self.opening_slider, "Remove small objects/noise.")
         ttk.Separator(self.controls_frame, orient="horizontal").pack(fill=tk.X, pady=5)
 
+        self.closing_var = tk.IntVar(value=0)
+        self.closing_slider = ttk.Scale(self.controls_frame, from_=0, to=5, variable=self.closing_var, command=self.update_preview)
+        ttk.Label(self.controls_frame, text="Closing Kernel Size").pack(pady=5)
+        self.closing_slider.pack(fill=tk.X, pady=10)
+        ToolTip(self.closing_slider, "Fill small holes/gaps.")
+        ttk.Separator(self.controls_frame, orient="horizontal").pack(fill=tk.X, pady=5)
+
         # Buttons
         self.save_btn = ttk.Button(self.controls_frame, text="Save Enhanced Map", command=self.save_map)
         self.save_btn.pack(fill=tk.X, pady=10)
@@ -139,8 +147,12 @@ class MapEnhancerWizard(tk.Tk):
             messagebox.showerror("Error", "Missing PGM or YAML file.")
             return
 
-        with open(yaml_file, 'r') as f:
-            self.map_metadata = yaml.safe_load(f)
+        try:
+            with open(yaml_file, 'r') as f:
+                self.map_metadata = yaml.safe_load(f)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read metadata: {e}")
+            return
         self.original_map = cv2.imread(pgm_file, cv2.IMREAD_GRAYSCALE)
         if self.original_map is None:
             messagebox.showerror("Error", "Failed to load map.")
@@ -171,6 +183,11 @@ class MapEnhancerWizard(tk.Tk):
         if (opening := self.opening_var.get()) > 0:
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (opening, opening))
             map_copy = cv2.morphologyEx(map_copy, cv2.MORPH_OPEN, kernel)
+
+        # Closing
+        if (closing := self.closing_var.get()) > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (closing, closing))
+            map_copy = cv2.morphologyEx(map_copy, cv2.MORPH_CLOSE, kernel)
 
         # Dilation
         if (dilation := self.dilation_var.get()) > 0:
@@ -245,6 +262,7 @@ class MapEnhancerWizard(tk.Tk):
         self.dilation_var.set(0)
         self.erosion_var.set(0)
         self.opening_var.set(0)
+        self.closing_var.set(0)
         self.update_preview()
 
 if __name__ == "__main__":
