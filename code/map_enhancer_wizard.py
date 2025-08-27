@@ -8,6 +8,7 @@ import os
 import math
 import platform
 from collections import deque
+import random
 
 APP_TITLE = "Map Enhancer Wizard (V2)"
 
@@ -36,24 +37,20 @@ def cv_to_photo(img):
         pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     return ImageTk.PhotoImage(pil)
 
-def linux_mousewheel_bind(widget, up_cb, down_cb):
-    """Make wheel work across platforms."""
+def linux_mousewheel_bind(widget, wheel_cb, up_id="<Button-4>", down_id="<Button-5>"):
+    """Bind zoom wheel generically."""
     sys = platform.system()
-    if sys == "Windows":
-        widget.bind("<MouseWheel>", lambda e: (up_cb() if e.delta > 0 else down_cb()))
-    elif sys == "Darwin":
-        widget.bind("<MouseWheel>", lambda e: (up_cb() if e.delta > 0 else down_cb()))
+    if sys in ("Windows", "Darwin"):
+        widget.bind("<MouseWheel>", wheel_cb)
     else:
-        widget.bind("<Button-4>", lambda e: up_cb())
-        widget.bind("<Button-5>", lambda e: down_cb())
+        widget.bind(up_id, wheel_cb)
+        widget.bind(down_id, wheel_cb)
 
 def morphological_kernel(size):
     size = clamp(int(size), 1, 99)
-    # force odd > 0
     if size % 2 == 0:
         size += 1
     return cv2.getStructuringElement(cv2.MORPH_RECT, (size, size))
-
 
 # ----------------------------- ToolTip -----------------------------
 
@@ -115,8 +112,9 @@ class MapEnhancerWizard(tk.Tk):
         self.minsize(1000, 700)
 
         # state
-        self.original_map = None          # uint8 grayscale
-        self.processed_map = None         # uint8 grayscale
+        self.original_map = None          # original loaded PGM
+        self.filter_input_map = None      # <- NEW: the current base for Filtering tab
+        self.processed_map = None         # latest filtered/optimized result
         self.map_metadata = {}
         self.original_folder_name = ""
         self.zoom_factor = 1.0
@@ -131,22 +129,67 @@ class MapEnhancerWizard(tk.Tk):
         # params (tk variables for live UI)
         self.threshold_var = tk.DoubleVar(value=0.5)  # 0..1 mapped to 0..255
         self.use_adaptive = tk.BooleanVar(value=False)
-        self.blur_var = tk.IntVar(value=0)            # gaussian sigma size-ish (0=off)
-        self.median_var = tk.IntVar(value=0)          # median filter kernel (0=off)
-        self.opening_var = tk.IntVar(value=0)         # morph open kernel
-        self.closing_var = tk.IntVar(value=0)         # morph close kernel
+        self.blur_var = tk.IntVar(value=0)            # gaussian kernel (odd, 0=off)
+        self.median_var = tk.IntVar(value=0)          # median filter kernel (odd, 0=off)
+        self.opening_var = tk.IntVar(value=0)
+        self.closing_var = tk.IntVar(value=0)
         self.dilation_var = tk.IntVar(value=0)
         self.erosion_var = tk.IntVar(value=0)
 
         self.metrics_label_var = tk.StringVar(value="")
         self.zoom_label_var = tk.StringVar(value="100%")
 
-        # undo/redo stacks of parameter snapshots
+        # undo/redo stacks of parameter snapshots (for Filtering)
         self.history = deque(maxlen=50)
         self.future = deque(maxlen=50)
 
+        # --------- Kernel Control-Points optimizer state ---------
+        self.cp_n = tk.IntVar(value=150)            # number of control points
+        self.cp_kernel = tk.IntVar(value=5)         # odd size: 3,5,7,...
+        self.cp_sigma = tk.DoubleVar(value=14.0)    # reserved for future
+        self.cp_alpha = tk.DoubleVar(value=0.08)    # step size per iter
+        self.cp_lc = tk.DoubleVar(value=2.0)        # line (pair) weight
+        self.cp_ls = tk.DoubleVar(value=0.2)        # neighbor Laplacian weight
+        self.cp_nb_radius = tk.IntVar(value=8)     # neighbor radius (px)
+        self.cp_max_iters = tk.IntVar(value=100)
+        self.cp_tol = tk.DoubleVar(value=1e-3)      # improvement tolerance
+
+        self.cp_points = []      # [(x,y), ...] current (float)
+        self.cp_init = []        # initial positions (float)
+        self.cp_prev = []        # previous positions (float) for erase step
+        self.cp_pairs = []       # list of (i,j) constraints
+        self.cp_selected = None  # index of selected point (for pairing)
+        self.cp_hit_radius = 14  # selection radius (canvas px)
+        self.cp_running = False
+        self.cp_last_score = None
+        self.cp_neighbors = None # cached neighbor lists
+        self.last_draw = {"scale":1.0, "ox":0, "oy":0}
+
+        # kernel payloads
+        self.cp_kernels = []     # list of np.uint8 (k x k) with values 0/1 (1=occupied)
+        self.cp_base_map = None  # frozen enhanced map at start
+        self.cp_base_occ = None  # boolean 0/1 occupancy from base map (1=occupied)
+        self.cp_work_occ = None  # evolving occupancy map (0/1)
+        self.cp_working_map = None  # evolving grayscale map (0 or 255)
+
+        # optimizer param dirtiness
+        self.cp_need_prepare = False      # <- NEW: if params changed
+
         self._build_ui()
         self._bind_keys()
+        self._bind_cp_param_traces()      # <- NEW
+
+    # -------- traces to mark optimizer params as dirty --------
+
+    def _bind_cp_param_traces(self):
+        def mark_dirty(*_):
+            self.cp_need_prepare = True
+        for v in [self.cp_kernel, self.cp_alpha, self.cp_lc, self.cp_ls,
+                  self.cp_nb_radius, self.cp_max_iters, self.cp_tol]:
+            try:
+                v.trace_add("write", mark_dirty)
+            except Exception:
+                pass
 
     # ------------------------- UI -------------------------
 
@@ -169,11 +212,15 @@ class MapEnhancerWizard(tk.Tk):
         controls.grid(row=0, column=0, sticky="ns")
 
         nb = ttk.Notebook(controls)
+        self.nb = nb
+        self.active_tab = "Filtering"
+        self.show_cp_overlay = False
+        self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         nb.pack(fill="both", expand=True)
 
-        # --- Tab: Controls ---
+        # --- Tab: Filtering ---
         tab_controls = ttk.Frame(nb, padding=(10, 10))
-        nb.add(tab_controls, text="Controls")
+        nb.add(tab_controls, text="Filtering")
 
         # File actions
         file_frame = ttk.LabelFrame(tab_controls, text="Map I/O", padding=10)
@@ -198,7 +245,7 @@ class MapEnhancerWizard(tk.Tk):
             row = ttk.Frame(parent)
             row.pack(fill="x", pady=4)
             ttk.Label(row, text=text).pack(side="left")
-            val_lbl = ttk.Label(row, textvariable=tk.StringVar(value=str(var.get())), width=4, anchor="e")
+            val_lbl = ttk.Label(row, textvariable=tk.StringVar(value=str(var.get())), width=6, anchor="e")
             val_lbl.pack(side="right")
             scale = ttk.Scale(row, from_=from_, to=to_, orient="horizontal",
                               command=lambda _=None, v=var, l=val_lbl: self._on_scale_change(v, l, cb),
@@ -226,13 +273,54 @@ class MapEnhancerWizard(tk.Tk):
         self._s_ero = add_slider(filt, "Erosion (px)", self.erosion_var, 0, 15, 1,
                                  cb=self.update_preview, tooltip="Thin obstacles / remove edge artifacts.")
 
-        # Actions
         act = ttk.LabelFrame(tab_controls, text="Actions", padding=10)
         act.pack(fill="x", expand=False, pady=(10, 0))
         ttk.Button(act, text="Auto-Enhance (A)", command=self.auto_enhance).pack(fill="x", pady=4)
         ttk.Button(act, text="Reset All Filters (R)", command=self.reset_filters).pack(fill="x", pady=4)
         ttk.Button(act, text="Undo (Ctrl+Z)", command=self.undo).pack(fill="x", pady=4)
         ttk.Button(act, text="Redo (Ctrl+Y)", command=self.redo).pack(fill="x", pady=4)
+
+        # --- Tab: Optimization (Kernel Control Points) ---
+        tab_opt = ttk.Frame(nb, padding=(10, 10))
+        nb.add(tab_opt, text="Optimization")
+
+        genf = ttk.LabelFrame(tab_opt, text="Control Points", padding=10)
+        genf.pack(fill="x", pady=(0,8))
+        ttk.Label(genf, text="N points:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(genf, width=8, textvariable=self.cp_n).grid(row=0, column=1, sticky="w", padx=4)
+        ttk.Button(genf, text="Generate (occupied only)", command=self._cp_generate).grid(row=0, column=2, padx=6)
+        ttk.Button(genf, text="Clear Pairs", command=self._cp_clear_pairs).grid(row=0, column=3, padx=6)
+        ttk.Label(genf, text="Click two red points to toggle a green constraint line. Double-click a node to remove all its connections.").grid(row=1, column=0, columnspan=4, sticky="w", pady=(6,0))
+
+        el = ttk.LabelFrame(tab_opt, text="Kernel & Optimization Parameters", padding=10)
+        el.pack(fill="x", pady=(0,8))
+
+        def put(r,c,txt,var,w=8,tip=None):
+            ttk.Label(el, text=txt).grid(row=r, column=c*2, sticky="w")
+            e = ttk.Entry(el, width=w, textvariable=var); e.grid(row=r, column=c*2+1, sticky="w", padx=4)
+            if tip: ToolTip(e, tip)
+
+        put(0,0,"Kernel size (odd):", self.cp_kernel, tip="3, 5, 7, ... Kernel a CP carries.")
+        put(0,1,"Step α:", self.cp_alpha, tip="Gradient step size per iteration.")
+        put(0,2,"Line weight λc:", self.cp_lc, tip="Weight for user constraints (pull endpoints together).")
+        put(1,0,"Elastic weight λs:", self.cp_ls, tip="Neighbor Laplacian weight.")
+        put(1,1,"Neighbor radius (px):", self.cp_nb_radius, tip="Neighbors within this radius influence each other.")
+        put(1,2,"Max iters:", self.cp_max_iters, tip="Max optimization iterations.")
+        put(2,0,"Tol (Δscore):", self.cp_tol, tip="Stop if improvement below this value.")
+
+        runf = ttk.LabelFrame(tab_opt, text="Run", padding=10)
+        runf.pack(fill="x")
+        ttk.Button(runf, text="Start", command=self._cp_start).grid(row=0, column=0, padx=4, pady=2, sticky="ew")
+        ttk.Button(runf, text="Step Once", command=self._cp_step_once).grid(row=0, column=1, padx=4, pady=2, sticky="ew")
+        ttk.Button(runf, text="Stop", command=self._cp_stop).grid(row=0, column=2, padx=4, pady=2, sticky="ew")
+        ttk.Button(runf, text="Apply to Enhanced", command=self._cp_apply).grid(row=1, column=0, columnspan=2, padx=4, pady=6, sticky="ew")
+        ttk.Button(runf, text="Revert Working", command=self._cp_revert).grid(row=1, column=2, padx=4, pady=6, sticky="ew")
+
+        stat = ttk.LabelFrame(tab_opt, text="Status", padding=10)
+        stat.pack(fill="x")
+        self.lbl_iter = ttk.Label(stat, text="iter: 0"); self.lbl_iter.grid(row=0, column=0, sticky="w")
+        self.lbl_score = ttk.Label(stat, text="score: -"); self.lbl_score.grid(row=0, column=1, sticky="w", padx=(12,0))
+        ttk.Label(stat, text="Tip: middle-mouse to pan, mouse wheel to zoom. 'F' to fit window.").grid(row=1, column=0, columnspan=3, sticky="w", pady=(6,0))
 
         # --- Tab: Metadata ---
         tab_meta = ttk.Frame(nb, padding=(10, 10))
@@ -260,10 +348,18 @@ class MapEnhancerWizard(tk.Tk):
 
         # Bind
         self.bind("<Configure>", lambda e: self.update_preview())
-        self.canvas.bind("<ButtonPress-1>", self._on_pan_start)
-        self.canvas.bind("<B1-Motion>", self._on_pan_drag)
-        self.canvas.bind("<Double-Button-1>", lambda e: self.fit_to_window())
-        linux_mousewheel_bind(self.canvas, self._zoom_in, self._zoom_out)
+
+        # Mouse: middle button panning, wheel zoom
+        self.canvas.bind("<ButtonPress-2>", self._on_pan_start)   # middle press
+        self.canvas.bind("<B2-Motion>", self._on_pan_drag)        # middle drag
+        linux_mousewheel_bind(self.canvas, self._on_wheel)        # zoom on wheel
+
+        # Fit to window: Shift + double left-click (avoid conflict with node double-click)
+        self.canvas.bind("<Shift-Double-Button-1>", lambda e: self.fit_to_window())
+
+        # CP interactions: left click to pair toggle; double-click to remove all connections of a node
+        self.canvas.bind("<ButtonPress-1>", self._on_canvas_click)
+        self.canvas.bind("<Double-Button-1>", self._on_canvas_double_click)
 
     def _bind_keys(self):
         self.bind("f", lambda e: self.fit_to_window())
@@ -276,12 +372,41 @@ class MapEnhancerWizard(tk.Tk):
         self.bind("<Control-y>", lambda e: self.redo())
         self.bind("<Escape>", lambda e: self._center_preview())
 
+    def _on_canvas_double_click(self, ev):
+        if self.active_tab != "Optimization":
+            return
+        if not self.cp_points:
+            return
+        imgxy = self._from_canvas(ev.x, ev.y)
+        if imgxy is None:
+            return
+        best = None; bestd2 = 1e9
+        for i,(x,y) in enumerate(self.cp_points):
+            cx, cy = self._to_canvas(x,y)
+            d2 = (cx-ev.x)**2 + (cy-ev.y)**2
+            if d2 < bestd2:
+                bestd2 = d2; best = i
+        if best is None or bestd2 > (self.cp_hit_radius**2):
+            return
+        self.cp_pairs = [p for p in self.cp_pairs if (best not in p)]
+        if self.cp_selected == best:
+            self.cp_selected = None
+        self.update_preview()
+
     def _on_scale_change(self, var, label_widget, callback):
         # Normalize and clamp ints where appropriate
         if isinstance(var, (tk.IntVar,)):
-            var.set(clamp(safe_int(var.get()), 0, 99))
+            if var is self.cp_kernel:
+                k = clamp(safe_int(var.get()), 3, 99)
+                if k % 2 == 0: k += 1
+                var.set(k)
+            else:
+                var.set(clamp(safe_int(var.get()), 0, 9999))
         elif isinstance(var, (tk.DoubleVar,)):
-            var.set(clamp(safe_float(var.get()), 0.0, 1.0))
+            if var is self.threshold_var:
+                var.set(clamp(safe_float(var.get()), 0.0, 1.0))
+            else:
+                var.set(safe_float(var.get()))
         label_widget.configure(text=str(var.get()))
         self._push_history_snapshot()
         if callback:
@@ -312,6 +437,7 @@ class MapEnhancerWizard(tk.Tk):
                 return
 
             self.original_map = img
+            self.filter_input_map = img.copy()     # <- base for filtering
             self.processed_map = img.copy()
             self.original_folder_name = os.path.basename(folder)
             self.zoom_factor = 1.0
@@ -337,6 +463,10 @@ class MapEnhancerWizard(tk.Tk):
             folder_name = os.path.basename(save_folder) or "enhanced_map"
             pgm_file = os.path.join(save_folder, f"{folder_name}.pgm")
             yaml_file = os.path.join(save_folder, f"{folder_name}.yaml")
+
+            # If there’s a live working optimized map, bake it first
+            if self.cp_working_map is not None:
+                self.processed_map = self.cp_working_map.copy()
 
             ok = cv2.imwrite(pgm_file, self.processed_map)
             if not ok:
@@ -375,14 +505,15 @@ class MapEnhancerWizard(tk.Tk):
         ]
         self.meta_text.insert("1.0", "\n".join(lines))
 
-    # ------------------------- Processing -------------------------
+    # ------------------------- Processing (Filtering tab) -------------------------
 
     def apply_filters(self):
-        """Build output from original using current parameters."""
-        if self.original_map is None:
+        """Build output from filter_input_map using current parameters."""
+        base = self.filter_input_map if self.filter_input_map is not None else self.original_map
+        if base is None:
             return None
 
-        img = self.original_map.copy()
+        img = base.copy()
 
         # Denoise pre-threshold
         med = clamp(int(self.median_var.get()), 0, 99)
@@ -397,7 +528,6 @@ class MapEnhancerWizard(tk.Tk):
 
         # Threshold
         if self.use_adaptive.get():
-            # adaptive mean threshold; block size auto from image size
             block = max(15, (min(img.shape[:2]) // 30) | 1)  # odd
             th_img = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
                                            cv2.THRESH_BINARY, block, 5)
@@ -430,27 +560,21 @@ class MapEnhancerWizard(tk.Tk):
     # ------------------------- Auto Enhance -------------------------
 
     def auto_enhance(self):
-        """Analyze map + YAML and auto-tune parameters."""
-        if self.original_map is None:
+        if self.filter_input_map is None:
             messagebox.showwarning("No Map", "Load a map first.")
             return
 
-        img = self.original_map
-
-        # 1) Estimate basic stats
+        img = self.filter_input_map
         hist = cv2.calcHist([img], [0], None, [256], [0, 256]).flatten()
         total = img.size
         mean_val = float((hist * np.arange(256)).sum() / max(total, 1))
-        # Laplacian variance as noise indicator
         lap = cv2.Laplacian(img, cv2.CV_64F)
         lap_var = float(lap.var())
 
-        # 2) Choose threshold automatically (Otsu), fallback to mid if fails
         try:
-            _ret, otsu = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            _ret, _ = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             thr = _ret / 255.0
             use_adapt = False
-            # If histogram is very flat or lap_var high, prefer adaptive
             if lap_var > 120.0:
                 use_adapt = True
                 thr = 0.5
@@ -458,9 +582,6 @@ class MapEnhancerWizard(tk.Tk):
             thr = 0.5
             use_adapt = False
 
-        # 3) Rough noise level -> blur/median
-        # tuned heuristics (empirical but safe):
-        #   low noise: lap_var < 30, med: 30..120, high: > 120
         if lap_var < 30:
             g, med = 0, 0
         elif lap_var < 120:
@@ -468,7 +589,6 @@ class MapEnhancerWizard(tk.Tk):
         else:
             g, med = 3, 3
 
-        # 4) Build a quick binary with the chosen threshold to inspect obstacles
         if use_adapt:
             block = max(15, (min(img.shape[:2]) // 30) | 1)
             bw = cv2.adaptiveThreshold(img, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
@@ -476,58 +596,37 @@ class MapEnhancerWizard(tk.Tk):
         else:
             _, bw = cv2.threshold(img, int(thr * 255), 255, cv2.THRESH_BINARY)
 
-        # Decide which value represents obstacles: look at ends of histogram
-        # Assume obstacles are darker in typical ROS maps; verify by sampling
         dark_ratio = hist[:64].sum() / total
         bright_ratio = hist[192:].sum() / total
         obstacles_are_black = dark_ratio >= bright_ratio
-
         bin_obs = (bw == (0 if obstacles_are_black else 255)).astype(np.uint8) * 255
 
-        # 5) Estimate wall thickness using distance transform
         if bin_obs.max() > 0:
             dist = cv2.distanceTransform(bin_obs, cv2.DIST_L2, 3)
-            # consider only near-surface points (avoid giant filled rooms)
             edge = cv2.Canny(bin_obs, 50, 150)
             dvals = dist[edge > 0]
             mean_thick = float(dvals.mean() * 2.0) if dvals.size else 1.0
         else:
             mean_thick = 1.0
 
-        # 6) Compute occupancy
         known_mask = (img != 205) if 205 in np.unique(img) else np.ones_like(img, dtype=bool)
         occ_ratio = float((bin_obs > 0).sum()) / float(known_mask.sum() + 1e-6)
 
-        # 7) Use YAML resolution for sensible physical goals
-        res_m = safe_float(self.map_metadata.get("resolution", 0.05), 0.05)  # default 5 cm
-        target_wall_m = 0.15  # target min wall thickness in meters (15 cm typical lidar map)
+        res_m = safe_float(self.map_metadata.get("resolution", 0.05), 0.05)
+        target_wall_m = 0.15
         target_px = clamp(int(round(target_wall_m / max(res_m, 1e-6))), 1, 15)
 
-        # 8) Decide morphology
-        dilation = 0
-        erosion = 0
-        opening = 0
-        closing = 0
-
-        # remove pepper noise
+        dilation = erosion = opening = closing = 0
         if occ_ratio < 0.02 or lap_var > 120:
             opening = clamp(int(round(0.05 / res_m)), 0, 7)
-
-        # fill tiny gaps along walls/doors
         closing = clamp(int(round(0.04 / res_m)), 0, 7)
-
-        # bring walls toward target thickness
         if mean_thick < target_px:
             dilation = clamp(int(round(target_px - mean_thick)), 0, 8)
         elif mean_thick > target_px * 1.8:
             erosion = clamp(int(round(mean_thick - target_px)), 0, 8)
-
-        # Soft limits and sanity
         if opening and erosion:
-            # opening already erodes; avoid double-eroding too hard
             erosion = max(0, erosion - 1)
 
-        # 9) Push the tuned parameters into the UI and refresh
         self.threshold_var.set(round(thr, 3))
         self.use_adaptive.set(bool(use_adapt))
         self.blur_var.set(int(g))
@@ -536,24 +635,21 @@ class MapEnhancerWizard(tk.Tk):
         self.closing_var.set(int(closing))
         self.dilation_var.set(int(dilation))
         self.erosion_var.set(int(erosion))
-
         self._push_history_snapshot()
         self.update_preview()
-
-        # 10) Status summary
         self._status(
-            f"Auto-Enhance applied | lapVar={lap_var:.1f} meanPix={mean_val:.1f} "
-            f"wall≈{mean_thick:.1f}px target≈{target_px}px occ={occ_ratio*100:.1f}%"
+            f"Auto-Enhance | lapVar={lap_var:.1f} meanPix={mean_val:.1f} wall≈{mean_thick:.1f}px target≈{target_px}px occ={occ_ratio*100:.1f}%"
         )
 
     # ------------------------- Preview & Canvas -------------------------
 
     def fit_to_window(self):
-        if self.processed_map is None:
+        img = self.processed_map if self.processed_map is not None else self.filter_input_map
+        if img is None:
             return
         cw = max(self.canvas.winfo_width(), 1)
         ch = max(self.canvas.winfo_height(), 1)
-        h, w = self.processed_map.shape
+        h, w = img.shape
         scale = min(cw / w, ch / h)
         self.zoom_factor = scale
         self.pan_x = 0
@@ -564,6 +660,18 @@ class MapEnhancerWizard(tk.Tk):
         self.pan_x = 0
         self.pan_y = 0
         self.update_preview()
+
+    def _on_wheel(self, e):
+        """Zoom on wheel rotation."""
+        delta = 0
+        if hasattr(e, "delta") and e.delta != 0:
+            delta = 1 if e.delta > 0 else -1
+        elif hasattr(e, "num"):
+            delta = 1 if e.num == 4 else -1
+        if delta > 0:
+            self._zoom_in()
+        else:
+            self._zoom_out()
 
     def _zoom_in(self):
         self.zoom_factor *= 1.1
@@ -592,65 +700,121 @@ class MapEnhancerWizard(tk.Tk):
         self.pan_start = (ev.x, ev.y)
         self.update_preview()
 
-    def _compose_preview_image(self):
-        """Create the preview image based on selected mode and flags."""
-        if self.processed_map is None or self.original_map is None:
+    def _to_canvas(self, x, y):
+        s = self.last_draw["scale"]; ox = self.last_draw["ox"]; oy = self.last_draw["oy"]
+        return ox + int(x*s) + int(self.pan_x), oy + int(y*s) + int(self.pan_y)
+
+    def _from_canvas(self, cx, cy):
+        s = self.last_draw["scale"]; ox = self.last_draw["ox"]; oy = self.last_draw["oy"]
+        if s <= 0: return None
+        if self.processed_map is None and self.filter_input_map is None:
+            return None
+        base = self.processed_map if self.processed_map is not None else self.filter_input_map
+        x = (cx - ox - self.pan_x) / s
+        y = (cy - oy - self.pan_y) / s
+        h, w = base.shape
+        if x < 0 or y < 0 or x >= w or y >= h: return None
+        return (float(x), float(y))
+
+    def _on_canvas_click(self, ev):
+        # Only in Optimization tab and Enhanced view
+        if self.active_tab != "Optimization" or self.preview_mode.get() != "enhanced":
+            return
+        if not self.cp_points:
+            return
+        imgxy = self._from_canvas(ev.x, ev.y)
+        if imgxy is None:
+            return
+
+        # find nearest cp within hit radius
+        best = None; bestd2 = 1e9
+        for i,(x,y) in enumerate(self.cp_points):
+            cx, cy = self._to_canvas(x,y)
+            d2 = (cx-ev.x)**2 + (cy-ev.y)**2
+            if d2 < bestd2:
+                bestd2 = d2; best = i
+        if best is None or bestd2 > (self.cp_hit_radius**2):
+            return
+
+        if self.cp_selected is None:
+            self.cp_selected = best
+        else:
+            i = self.cp_selected
+            j = best
+            if i != j:
+                pair = (min(i,j), max(i,j))
+                if pair in self.cp_pairs:
+                    # toggle OFF => remove connection
+                    self.cp_pairs.remove(pair)
+                else:
+                    # toggle ON => add connection
+                    self.cp_pairs.append(pair)
+            self.cp_selected = None
+        self.update_preview()
+
+    def _compose_preview_image(self, base_override=None):
+        """Create the preview image with overlays."""
+        if self.filter_input_map is None and self.processed_map is None:
             return None
 
         mode = self.preview_mode.get()
         if mode == "original":
-            base = self.original_map
+            base = self.original_map if self.original_map is not None else (self.filter_input_map if self.filter_input_map is not None else self.processed_map)
         elif mode == "enhanced":
-            base = self.processed_map
+            base = base_override if base_override is not None else (self.processed_map if self.processed_map is not None else self.filter_input_map)
         else:
-            # side by side
-            h1, w1 = self.original_map.shape
-            h2, w2 = self.processed_map.shape
+            left = self.original_map if self.original_map is not None else (self.filter_input_map if self.filter_input_map is not None else self.processed_map)
+            right = base_override if base_override is not None else (self.processed_map if self.processed_map is not None else self.filter_input_map)
+            if left is None or right is None:
+                return None
+            h1, w1 = left.shape
+            h2, w2 = right.shape
             h = max(h1, h2)
             canvas = np.full((h, w1 + w2 + 4), 255, np.uint8)
-            canvas[:h1, :w1] = self.original_map
-            canvas[:h2, w1 + 4:w1 + 4 + w2] = self.processed_map
+            canvas[:h1, :w1] = left
+            canvas[:h2, w1 + 4:w1 + 4 + w2] = right
             base = canvas
 
         img = base.copy()
 
-        # Visual invert (for display only)
         if self.invert_view.get():
             img = 255 - img
 
-        # Optional grid overlay for scale/inspection
+        # Grid overlay
         if self.show_grid.get():
-            step = max(20, min(img.shape[0], img.shape[1]) // 20)
-            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-            for x in range(0, img.shape[1], step):
-                cv2.line(img, (x, 0), (x, img.shape[0]-1), (180, 180, 180), 1, cv2.LINE_AA)
-            for y in range(0, img.shape[0], step):
-                cv2.line(img, (0, y), (img.shape[1]-1, y), (180, 180, 180), 1, cv2.LINE_AA)
+            step = max(10, min(img.shape[0], img.shape[1]) // 40)
+            vis = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            for x in range(0, vis.shape[1], step):
+                cv2.line(vis, (x, 0), (x, vis.shape[0]-1), (180, 180, 180), 1, cv2.LINE_AA)
+            for y in range(0, vis.shape[0], step):
+                cv2.line(vis, (0, y), (vis.shape[1]-1, y), (180, 180, 180), 1, cv2.LINE_AA)
+            img = vis
         else:
-            # keep grayscale for sharper view
             if img.ndim != 2:
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
         return img
 
     def update_preview(self):
-        # Recompute processed map
-        self.apply_filters()
-        if self.processed_map is None:
-            return
+        # Run filtering only on the Filtering tab to avoid clobbering optimization view
+        if self.active_tab == "Filtering":
+            self.apply_filters()
 
-        # Update metrics quick glance
+        # live optimizer view: show working map if exists in enhanced mode
+        base_override = self.cp_working_map if (self.preview_mode.get()=="enhanced" and self.cp_working_map is not None) else None
+
+        # Update metrics
         try:
-            occ_black = (self.processed_map == 0).sum()
-            occ_white = (self.processed_map == 255).sum()
-            total = self.processed_map.size
-            occ_ratio = occ_black / max(total, 1)
-            self.metrics_label_var.set(f"Obstacles≈{occ_ratio*100:.1f}% | size {self.processed_map.shape[1]}×{self.processed_map.shape[0]}")
+            src = base_override if base_override is not None else (self.processed_map if self.processed_map is not None else self.filter_input_map)
+            if src is not None:
+                occ_black = (src == 0).sum()
+                total = src.size
+                occ_ratio = occ_black / max(total, 1)
+                self.metrics_label_var.set(f"Obstacles≈{occ_ratio*100:.1f}% | size {src.shape[1]}×{src.shape[0]}")
         except Exception:
             pass
 
-        # Compose preview image
-        img = self._compose_preview_image()
+        img = self._compose_preview_image(base_override=base_override)
         if img is None:
             return
 
@@ -667,13 +831,63 @@ class MapEnhancerWizard(tk.Tk):
         interp = cv2.INTER_NEAREST if scale >= 1.0 else cv2.INTER_AREA
         disp = cv2.resize(img, (new_w, new_h), interpolation=interp)
 
+        # remember mapping
+        self.last_draw["scale"] = scale
+        self.last_draw["ox"] = (cw - new_w) // 2
+        self.last_draw["oy"] = (ch - new_h) // 2
+
         self.photo_cache = cv_to_photo(disp)
         self.canvas.delete("all")
-        x = (cw - new_w) // 2 + int(self.pan_x)
-        y = (ch - new_h) // 2 + int(self.pan_y)
-        self.canvas.create_image(x, y, anchor=tk.NW, image=self.photo_cache)
+        x0 = self.last_draw["ox"] + int(self.pan_x)
+        y0 = self.last_draw["oy"] + int(self.pan_y)
+        self.canvas.create_image(x0, y0, anchor=tk.NW, image=self.photo_cache)
 
-    # ------------------------- History -------------------------
+        # overlays: control points & pairs (Optimization tab only)
+        if self.show_cp_overlay and self.preview_mode.get() == "enhanced" and self.cp_points:
+            for (i,j) in self.cp_pairs:
+                xi, yi = self.cp_points[i]; xj, yj = self.cp_points[j]
+                cxi, cyi = self._to_canvas(xi, yi)
+                cxj, cyj = self._to_canvas(xj, yj)
+                self.canvas.create_line(cxi, cyi, cxj, cyj, fill="green", width=3)
+            for idx,(x,y) in enumerate(self.cp_points):
+                cx, cy = self._to_canvas(x,y)
+                r = max(5, int(1.1 * self.last_draw["scale"]))
+                self.canvas.create_oval(cx-r, cy-r, cx+r, cy+r, fill="red", outline="black", width=1)
+            if self.cp_selected is not None:
+                sx, sy = self._to_canvas(*self.cp_points[self.cp_selected])
+                R = self.cp_hit_radius
+                self.canvas.create_oval(sx-R, sy-R, sx+R, sy+R, outline="#33ff33", width=2, dash=(3,2))
+
+    # ------------------------- History & Tab switching -------------------------
+
+    def _on_tab_changed(self, e):
+        try:
+            tab_text = e.widget.tab(e.widget.select(), "text")
+        except Exception:
+            tab_text = "Filtering"
+        self.active_tab = tab_text
+        self.show_cp_overlay = (tab_text == "Optimization")
+
+        # If we're leaving Optimization and have a working optimized map,
+        # bake it so Filtering sees the result and then clear CP state.
+        if tab_text != "Optimization" and self.cp_working_map is not None:
+            self.processed_map = self.cp_working_map.copy()
+            self.filter_input_map = self.processed_map.copy()   # <- important for Filtering chain
+            # clear CP state
+            self.cp_running = False
+            self.cp_points = []
+            self.cp_init = []
+            self.cp_prev = []
+            self.cp_pairs = []
+            self.cp_neighbors = None
+            self.cp_kernels = []
+            self.cp_base_map = None
+            self.cp_base_occ = None
+            self.cp_work_occ = None
+            self.cp_working_map = None
+            self.cp_last_score = None
+
+        self.update_preview()
 
     def _snapshot(self):
         return dict(
@@ -702,7 +916,6 @@ class MapEnhancerWizard(tk.Tk):
         self.future.clear()
 
     def _push_history_snapshot(self):
-        # push only if changed from last
         snap = self._snapshot()
         if not self.history or self.history[-1] != snap:
             self.history.append(snap)
@@ -711,7 +924,7 @@ class MapEnhancerWizard(tk.Tk):
     def undo(self):
         if len(self.history) <= 1:
             return
-        cur = self.history.pop()  # remove current
+        cur = self.history.pop()
         self.future.appendleft(cur)
         prev = self.history[-1]
         self._apply_snapshot(prev)
@@ -743,6 +956,348 @@ class MapEnhancerWizard(tk.Tk):
     def _status(self, msg):
         self.title(f"{APP_TITLE} — {msg}")
 
+    # =================================================================
+    #               CONTROL POINTS + KERNEL-BASED OPTIMIZATION
+    # =================================================================
+
+    def _occupied_coords(self):
+        """Return Nx2 float array of (x,y) where processed_map is occupied (black=0)."""
+        src = self.processed_map if self.processed_map is not None else self.filter_input_map
+        if src is None:
+            return np.empty((0,2), np.float32)
+        mask = (src == 0)
+        ys, xs = np.nonzero(mask)
+        if xs.size == 0:
+            return np.empty((0,2), np.float32)
+        return np.stack([xs, ys], axis=1).astype(np.float32)
+
+    def _cp_generate(self):
+        """Generate N control points, roughly evenly (k-means over occupied)."""
+        src = self.processed_map if self.processed_map is not None else self.filter_input_map
+        if src is None:
+            messagebox.showwarning("No Map", "Load or produce a map first.")
+            return
+        pts = self._occupied_coords()
+        if len(pts) == 0:
+            messagebox.showwarning("No Occupied Pixels", "Adjust filtering so obstacles are black (0).")
+            return
+        N = int(self.cp_n.get())
+        N = clamp(N, 2, min(2000, len(pts)))
+        if len(pts) > 50000:
+            idx = np.random.choice(len(pts), 50000, replace=False)
+            data = pts[idx]
+        else:
+            data = pts
+        Z = data.astype(np.float32)
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 25, 1.0)
+        ret, labels, centers = cv2.kmeans(Z, N, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+        centers = centers.astype(np.float32)
+        h, w = src.shape
+        centers[:,0] = np.clip(np.round(centers[:,0]), 0, w-1)
+        centers[:,1] = np.clip(np.round(centers[:,1]), 0, h-1)
+        self.cp_points = [(float(x), float(y)) for (x,y) in centers]
+        self.cp_init = [(float(x), float(y)) for (x,y) in centers]
+        self.cp_prev = [(float(x), float(y)) for (x,y) in centers]
+        self.cp_pairs = []
+        self.cp_selected = None
+        self.cp_neighbors = None
+        self.cp_last_score = None
+        self.cp_kernels = []
+        self.cp_base_map = None
+        self.cp_base_occ = None
+        self.cp_work_occ = None
+        self.cp_working_map = None
+        self.cp_need_prepare = True
+        self._status(f"Generated {len(self.cp_points)} control points.")
+        self.update_preview()
+
+    def _cp_clear_pairs(self):
+        self.cp_pairs = []
+        self.cp_selected = None
+        self._status("Cleared constraint pairs.")
+        self.update_preview()
+
+    def _cp_build_neighbors(self):
+        """Brute-force neighbor lists within radius."""
+        if not self.cp_points:
+            self.cp_neighbors = []
+            return
+        pts = np.array(self.cp_points, dtype=np.float32)
+        R = float(self.cp_nb_radius.get())
+        R2 = R*R
+        n = len(pts)
+        neigh = [[] for _ in range(n)]
+        for i in range(n):
+            dx = pts[:,0] - pts[i,0]
+            dy = pts[:,1] - pts[i,1]
+            d2 = dx*dx + dy*dy
+            idxs = np.where((d2 > 0.0) & (d2 <= R2))[0]
+            neigh[i] = idxs.tolist()
+        self.cp_neighbors = neigh
+
+    def _cp_score(self, P):
+        """Sum of squared distances for all constraint lines."""
+        if not self.cp_pairs:
+            return 0.0
+        pts = np.array(P, dtype=np.float32)
+        s = 0.0
+        for (i,j) in self.cp_pairs:
+            d = pts[j] - pts[i]
+            s += float(d[0]*d[0] + d[1]*d[1])
+        return s
+
+    def _cp_forces(self, P):
+        """Forces from constraints and elastic neighbors."""
+        n = len(P)
+        F = np.zeros((n,2), np.float32)
+        pts = np.array(P, dtype=np.float32)
+        lc = float(self.cp_lc.get())
+        ls = float(self.cp_ls.get())
+
+        # constraint lines: pull endpoints together
+        for (i,j) in self.cp_pairs:
+            d = pts[j] - pts[i]
+            F[i] += lc * d
+            F[j] += lc * (-d)
+
+        # elastic Laplacian with neighbors
+        if self.cp_neighbors is None:
+            self._cp_build_neighbors()
+        for i, neigh in enumerate(self.cp_neighbors or []):
+            if not neigh: continue
+            diff = pts[neigh] - pts[i]        # sum_j (pj - pi)
+            F[i] += ls * diff.sum(axis=0)
+
+        return F
+
+    # -------- Kernel extraction & application --------
+
+    def _extract_kernel_at(self, occ01, cx, cy, k):
+        """Return kxk uint8 kernel (values 0 or 1) centered at (cx,cy). OOB => 0."""
+        r = k // 2
+        karr = np.zeros((k,k), dtype=np.uint8)
+        h, w = occ01.shape
+        x0 = int(round(cx)) - r
+        y0 = int(round(cy)) - r
+        xs0 = max(0, x0); ys0 = max(0, y0)
+        xs1 = min(w, x0 + k); ys1 = min(h, y0 + k)
+        if xs0 < xs1 and ys0 < ys1:
+            kx0 = xs0 - x0; ky0 = ys0 - y0
+            kx1 = kx0 + (xs1 - xs0); ky1 = ky0 + (ys1 - ys0)
+            karr[ky0:ky1, kx0:kx1] = occ01[ys0:ys1, xs0:xs1]
+        return karr
+
+    def _compose_from_kernels(self, prev_occ, prev_positions, new_positions, kernels):
+        """
+        Move each kernel from prev_positions -> new_positions.
+        - First erase previous kernel footprints (set to free=0).
+        - Then write kernel at new positions (last-wins for overlaps).
+        """
+        out = prev_occ.copy()
+        h, w = out.shape
+        k = kernels[0].shape[0] if kernels else 0
+        r = k // 2
+
+        # 1) erase previous footprints
+        for (px,py), K in zip(prev_positions, kernels):
+            cx = int(round(px)); cy = int(round(py))
+            x0 = cx - r; y0 = cy - r
+            xs0 = max(0, x0); ys0 = max(0, y0)
+            xs1 = min(w, x0 + k); ys1 = min(h, y0 + k)
+            if xs0 < xs1 and ys0 < ys1:
+                out[ys0:ys1, xs0:xs1] = 0  # free where this kernel used to be
+
+        # 2) place at new positions
+        for (nx,ny), K in zip(new_positions, kernels):
+            cx = int(round(nx)); cy = int(round(ny))
+            x0 = cx - r; y0 = cy - r
+            xs0 = max(0, x0); ys0 = max(0, y0)
+            xs1 = min(w, x0 + k); ys1 = min(h, y0 + k)
+            if xs0 < xs1 and ys0 < ys1:
+                kx0 = xs0 - x0; ky0 = ys0 - y0
+                kx1 = kx0 + (xs1 - xs0); ky1 = ky0 + (ys1 - ys0)
+                out[ys0:ys1, xs0:xs1] = K[ky0:ky1, kx0:kx1]
+
+        return out
+
+    def _refresh_working_map_from_occ(self):
+        """Convert 0/1 occupancy to grayscale map 0/255."""
+        if self.cp_work_occ is None:
+            return None
+        self.cp_working_map = np.where(self.cp_work_occ > 0, 0, 255).astype(np.uint8)
+        return self.cp_working_map
+
+    # -------- helper: estimate wall thickness for drawing --------
+
+    def _estimate_wall_thickness_px(self, bin_img_0_255):
+        try:
+            obs = (bin_img_0_255 == 0).astype(np.uint8) * 255
+            if obs.max() == 0:
+                return 3
+            dist = cv2.distanceTransform(obs, cv2.DIST_L2, 3)
+            edge = cv2.Canny(obs, 50, 150)
+            dvals = dist[edge > 0]
+            if dvals.size == 0:
+                return 3
+            mean_thick = float(dvals.mean() * 2.0)
+            return clamp(int(round(mean_thick)), 1, 12)
+        except Exception:
+            return 3
+
+    # -------- Lifecycle: prepare / iterate / start/stop/apply --------
+
+    def _cp_prepare(self):
+        base = self.processed_map if self.processed_map is not None else self.filter_input_map
+        if base is None:
+            messagebox.showwarning("No Map", "Load or produce a map first.")
+            return False
+        if not self.cp_points:
+            messagebox.showwarning("No Control Points", "Generate control points first.")
+            return False
+
+        # freeze base map + occupancy
+        self.cp_base_map = base.copy()
+        self.cp_base_occ = (self.cp_base_map == 0).astype(np.uint8)  # 1=occupied, 0=free
+
+        # initial working occupancy is the base
+        self.cp_work_occ = self.cp_base_occ.copy()
+        self._refresh_working_map_from_occ()
+
+        # lock initial positions & previous positions
+        self.cp_init = [(float(x), float(y)) for (x,y) in self.cp_points]
+        self.cp_prev = [(float(x), float(y)) for (x,y) in self.cp_points]
+
+        # build kernels at initial positions
+        k = int(self.cp_kernel.get())
+        if k % 2 == 0: k += 1
+        k = clamp(k, 3, 99)
+        self.cp_kernel.set(k)
+        self.cp_kernels = [self._extract_kernel_at(self.cp_base_occ, x, y, k) for (x,y) in self.cp_points]
+
+        # neighbors from current radius
+        self.cp_neighbors = None
+        self._cp_build_neighbors()
+
+        self.cp_last_score = self._cp_score(self.cp_points)
+        self.lbl_score.config(text=f"score: {self.cp_last_score:.3f}")
+        self.lbl_iter.config(text="iter: 0")
+        self.cp_need_prepare = False
+        return True
+
+    def _cp_iterate_once(self):
+        """One gradient step on control points; then move kernels accordingly."""
+        P = np.array(self.cp_points, np.float32)
+        F = self._cp_forces(P)
+        alpha = float(self.cp_alpha.get())
+        P_new = P + alpha * F
+
+        # keep inside image bounds
+        base = self.processed_map if self.processed_map is not None else self.filter_input_map
+        h, w = base.shape
+        P_new[:,0] = np.clip(P_new[:,0], 0, w-1)
+        P_new[:,1] = np.clip(P_new[:,1], 0, h-1)
+
+        # evaluate score
+        new_score = self._cp_score(P_new)
+        improved = (self.cp_last_score is None) or (new_score < self.cp_last_score - float(self.cp_tol.get()))
+
+        # Update map by actually MOVING kernels (erase old footprint -> write new)
+        if improved:
+            new_positions = [(float(x), float(y)) for (x,y) in P_new]
+            self.cp_work_occ = self._compose_from_kernels(self.cp_work_occ, self.cp_prev, new_positions, self.cp_kernels)
+            self.cp_prev = new_positions
+            self.cp_points = new_positions
+            self.cp_last_score = new_score
+            self._refresh_working_map_from_occ()
+        return improved, new_score
+
+    def _cp_step_once(self):
+        if not self.cp_points:
+            messagebox.showwarning("No Control Points", "Generate control points first.")
+            return
+        if self.cp_last_score is None or self.cp_need_prepare:
+            if not self._cp_prepare():
+                return
+        improved, score = self._cp_iterate_once()
+        self.update_preview()
+        self.lbl_score.config(text=f"score: {score:.3f}")
+        t = self.lbl_iter.cget("text")
+        k = int(t.split(":")[-1]) if ":" in t else 0
+        self.lbl_iter.config(text=f"iter: {k+1}")
+
+    def _cp_loop_tick(self, it_left):
+        if not self.cp_running:
+            return
+        if it_left <= 0:
+            self._cp_stop()
+            return
+        improved, score = self._cp_iterate_once()
+        self.update_preview()
+        self.lbl_score.config(text=f"score: {score:.3f}")
+        t = self.lbl_iter.cget("text")
+        k = int(t.split(":")[-1]) if ":" in t else 0
+        self.lbl_iter.config(text=f"iter: {k+1}")
+        if not improved:
+            self._cp_stop()
+            return
+        self.after(1, lambda: self._cp_loop_tick(it_left-1))
+
+    def _cp_start(self):
+        if self.cp_last_score is None or self.cp_need_prepare:
+            if not self._cp_prepare():
+                return
+        self.cp_running = True
+        self._status("Kernel optimizer running…")
+        maxit = int(self.cp_max_iters.get())
+        self._cp_loop_tick(maxit)
+
+    def _cp_stop(self):
+        if self.cp_running:
+            self.cp_running = False
+            self._status("Optimization stopped / converged")
+
+    def _cp_apply(self):
+        """Bake working map to processed_map (kernel-based result)."""
+        if self.cp_working_map is None:
+            messagebox.showinfo("Kernel Optimizer", "Nothing to apply yet.")
+            return
+
+        # Bake the kernel-optimized map
+        self.processed_map = self.cp_working_map.copy()
+        self.filter_input_map = self.processed_map.copy()
+
+        # Clear optimization state
+        self.cp_running = False
+        self.cp_points = []
+        self.cp_init = []
+        self.cp_prev = []
+        self.cp_pairs = []
+        self.cp_neighbors = None
+        self.cp_kernels = []
+        self.cp_base_map = None
+        self.cp_base_occ = None
+        self.cp_work_occ = None
+        self.cp_working_map = None
+        self.cp_last_score = None
+        self.cp_need_prepare = False
+
+        self._push_history_snapshot()
+        self.update_preview()
+        messagebox.showinfo("Kernel Optimizer", "Applied kernel-optimized map to Enhanced and set as Filtering base.")
+
+    def _cp_revert(self):
+        """Revert working map to base; reset CP positions to init."""
+        if self.cp_base_map is None:
+            return
+        self.cp_work_occ = self.cp_base_occ.copy()
+        self._refresh_working_map_from_occ()
+        self.cp_points = [(x,y) for (x,y) in self.cp_init]
+        self.cp_prev = [(x,y) for (x,y) in self.cp_init]
+        self.cp_last_score = None
+        self.lbl_iter.config(text="iter: 0")
+        self.lbl_score.config(text="score: -")
+        self.update_preview()
+        self._status("Working copy reverted.")
 
 if __name__ == "__main__":
     app = MapEnhancerWizard()
