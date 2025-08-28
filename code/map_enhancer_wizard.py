@@ -165,6 +165,9 @@ class MapEnhancerWizard(tk.Tk):
         self.cp_neighbors = None # cached neighbor lists
         self.last_draw = {"scale":1.0, "ox":0, "oy":0}
 
+        # ---- Corner anchors (points near sharp angles that we keep fixed) ----
+        self.cp_anchor_idx = set()   # set[int] of CP indices that are locked (do not move)
+
         # kernel payloads
         self.cp_kernels = []     # list of np.uint8 (k x k) with values 0/1 (1=occupied)
         self.cp_base_map = None  # frozen enhanced map at start
@@ -938,10 +941,16 @@ class MapEnhancerWizard(tk.Tk):
                 cxi, cyi = self._to_canvas(xi, yi)
                 cxj, cyj = self._to_canvas(xj, yj)
                 self.canvas.create_line(cxi, cyi, cxj, cyj, fill="green", width=3)
-            for idx,(x,y) in enumerate(self.cp_points):
-                cx, cy = self._to_canvas(x,y)
+            for idx, (x, y) in enumerate(self.cp_points):
+                cx, cy = self._to_canvas(x, y)
                 r = max(5, int(1.1 * self.last_draw["scale"]))
-                self.canvas.create_oval(cx-r, cy-r, cx+r, cy+r, fill="red", outline="black", width=1)
+                # Anchors (corner-locked) in BLUE, movables in RED
+                if idx in self.cp_anchor_idx:
+                    fill_color = "#2563EB"  # blue
+                else:
+                    fill_color = "red"
+                self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r,
+                                        fill=fill_color, outline="black", width=1)
             if self.cp_selected is not None:
                 sx, sy = self._to_canvas(*self.cp_points[self.cp_selected])
                 R = self.cp_hit_radius
@@ -975,6 +984,7 @@ class MapEnhancerWizard(tk.Tk):
             self.cp_work_occ = None
             self.cp_working_map = None
             self.cp_last_score = None
+            self.cp_anchor_idx = set()
 
         self.update_preview()
 
@@ -1097,6 +1107,10 @@ class MapEnhancerWizard(tk.Tk):
         self.cp_work_occ = None
         self.cp_working_map = None
         self.cp_need_prepare = True
+
+        # After generating CPs, mark corner-near points as anchors (fixed)
+        self._assign_anchor_points()
+
         self._status(f"Generated {len(self.cp_points)} control points.")
         self.update_preview()
 
@@ -1233,6 +1247,200 @@ class MapEnhancerWizard(tk.Tk):
         except Exception:
             return 3
 
+    # -------- Corner detection & anchor assignment --------
+
+    def _estimate_cp_spacing(self):
+        """Estimate a typical nearest-neighbor spacing among control points (in pixels)."""
+        if not self.cp_points or len(self.cp_points) < 2:
+            return 8.0
+        pts = np.array(self.cp_points, dtype=np.float32)
+        # Sample to keep O(n^2) manageable
+        if len(pts) > 400:
+            idx = np.random.choice(len(pts), 400, replace=False)
+            pts = pts[idx]
+        dmins = []
+        for i in range(len(pts)):
+            dx = pts[:, 0] - pts[i, 0]
+            dy = pts[:, 1] - pts[i, 1]
+            d2 = dx * dx + dy * dy
+            d2[i] = 1e12  # ignore self
+            dmins.append(float(np.sqrt(d2.min())))
+        dmins.sort()
+        k = max(5, int(0.2 * len(dmins)))  # be robust to outliers
+        return max(4.0, float(np.mean(dmins[:k])))
+
+    def _compute_edges_and_orientation(self, base_gray_0_255):
+        """
+        Precompute edge map and per-pixel gradient orientation (0..180 degrees).
+        We use the obstacle mask for crisp edges.
+        """
+        obs = (base_gray_0_255 == 0).astype(np.uint8) * 255
+        edges = cv2.Canny(obs, 80, 160, apertureSize=3, L2gradient=True)
+
+        # Gradient orientation modulo 180° (direction sign ignored)
+        gx = cv2.Sobel(obs, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(obs, cv2.CV_32F, 0, 1, ksize=3)
+        ang = cv2.phase(gx, gy, angleInDegrees=True)   # 0..360
+        theta = (ang % 180.0).astype(np.float32)       # 0..180
+        return edges, theta
+
+    def _has_right_angle_at(self, x, y, edges, theta, win_px):
+        """
+        Check if the local neighborhood around (x,y) contains two dominant edge
+        orientations whose difference is between 80° and 100°.
+        """
+        h, w = edges.shape
+        hw = int(max(5, min(60, win_px)) // 2)  # half-window
+        cx = int(round(x)); cy = int(round(y))
+        x0 = max(0, cx - hw); x1 = min(w, cx + hw + 1)
+        y0 = max(0, cy - hw); y1 = min(h, cy + hw + 1)
+
+        patch_edges = edges[y0:y1, x0:x1]
+        if patch_edges.size == 0:
+            return False
+
+        mask = (patch_edges > 0)
+        if mask.sum() < 20:
+            return False
+
+        patch_theta = theta[y0:y1, x0:x1][mask]  # 1D angles array
+        # Histogram in 5° bins across 0..180
+        bins = np.linspace(0.0, 180.0, 37)  # 36 bins, width=5°
+        hist, _ = np.histogram(patch_theta, bins=bins)
+
+        # Two dominant peaks?
+        if hist.sum() < 25:
+            return False
+        top2_idx = hist.argsort()[-2:][::-1]
+        a_idx, b_idx = int(top2_idx[0]), int(top2_idx[1])
+        a_cnt, b_cnt = int(hist[a_idx]), int(hist[b_idx])
+
+        # Require the second peak to be meaningful
+        if b_cnt < max(5, 0.20 * a_cnt): # 8, 0.30 * a_cnt
+            return False
+
+        # Bin centers (degrees)
+        bin_w = 180.0 / 36.0  # 5 degrees
+        a_deg = (a_idx + 0.5) * bin_w
+        b_deg = (b_idx + 0.5) * bin_w
+        diff = abs(a_deg - b_deg)
+        if diff > 90.0:
+            diff = 180.0 - diff  # acute equivalent
+
+        return (85.0 <= diff <= 95.0) # 80.0 <= diff <= 100.0
+
+    def _detect_corners(self, src_gray_0_255):
+        """
+        Detect strong corners on the *edges* of the obstacle mask.
+        Using edges reduces flooding the map with “corners”.
+        Returns a list of (x, y) float coordinates in image space.
+        """
+        try:
+            obs = (src_gray_0_255 == 0).astype(np.uint8) * 255
+            # Edge map for sparser, more localized interest points
+            edges = cv2.Canny(obs, 80, 160, apertureSize=3, L2gradient=True)
+
+            corners = cv2.goodFeaturesToTrack(
+                image=edges,
+                maxCorners=800,     # keep bounded
+                qualityLevel=0.05,  # slightly stricter #0.03
+                minDistance=6,      # spread them out a bit
+                blockSize=5,
+                useHarrisDetector=True,
+                k=0.04
+            )
+            if corners is None:
+                return []
+            return [(float(c[0][0]), float(c[0][1])) for c in corners]
+        except Exception:
+            return []
+
+    def _assign_anchor_points(self):
+        """
+        Mark control points close to detected corners as anchors (fixed) **only if**
+        the local neighborhood shows two dominant edge directions forming 80°..100°.
+        Uses adaptive radius (from CP spacing) and caps anchor ratio.
+        """
+        self.cp_anchor_idx = set()
+
+        if not self.cp_points:
+            return
+
+        base = self.processed_map if self.processed_map is not None else self.filter_input_map
+        if base is None:
+            return
+
+        # 1) Sparse corner proposals (on edges)
+        corners = self._detect_corners(base)
+        if not corners:
+            self._status("Anchors assigned: 0 (no corners)")
+            return
+
+        # 2) Precompute edges + orientation once
+        edges, theta = self._compute_edges_and_orientation(base)
+
+        # 3) Adaptive radius from CP spacing, and a window size for angle test
+        spacing = self._estimate_cp_spacing() if hasattr(self, "_estimate_cp_spacing") else 8.0
+        radius = int(max(4, min(12, 0.45 * spacing)))     # for corner proximity
+        r2 = float(radius * radius)
+
+        # Window for the local angle check (odd-ish, scaled with spacing)
+        win_px = int(max(11, min(41, 1.2 * spacing)))
+
+        pts = np.array(self.cp_points, dtype=np.float32)
+        candidates = []
+
+        # Gather CP indices that are near ANY detected corner
+        for i, (x, y) in enumerate(pts):
+            for (cx, cy) in corners:
+                dx = cx - x
+                dy = cy - y
+                if (dx * dx + dy * dy) <= r2:
+                    candidates.append(i)
+                    break
+
+        if not candidates:
+            self._status("Anchors assigned: 0 (no CPs near corners)")
+            return
+
+        # 4) Enforce the right-angle rule (80..100 deg)
+        confirmed = []
+        for i in candidates:
+            x, y = pts[i]
+            if self._has_right_angle_at(x, y, edges, theta, win_px):
+                confirmed.append(i)
+
+        if not confirmed:
+            self._status("Anchors assigned: 0 (no right-angle corners)")
+            return
+
+        # 5) Cap anchors to avoid over-anchoring
+        max_ratio = 0.18  # at most 18% of CPs
+        cap = max(8, int(max_ratio * len(self.cp_points)))
+        cap = min(cap, 250)
+
+        # Deduplicate while preserving order
+        seen = set()
+        uniq = [c for c in confirmed if (c not in seen and not seen.add(c))]
+
+        if len(uniq) > cap:
+            # uniform down-sample to keep coverage
+            step = len(uniq) / float(cap)
+            picked = []
+            acc = 0.0
+            for _ in range(cap):
+                idx = int(acc)
+                picked.append(uniq[idx])
+                acc += step
+            self.cp_anchor_idx = set(picked)
+        else:
+            self.cp_anchor_idx = set(uniq)
+
+        self._status(
+            f"Anchors assigned: {len(self.cp_anchor_idx)} of {len(self.cp_points)} "
+            f"(radius={radius}, win={win_px}, right-angle only)"
+        )
+
     # -------- Lifecycle: prepare / iterate / start/stop/apply --------
 
     def _cp_prepare(self):
@@ -1285,6 +1493,14 @@ class MapEnhancerWizard(tk.Tk):
         h, w = base.shape
         P_new[:,0] = np.clip(P_new[:,0], 0, w-1)
         P_new[:,1] = np.clip(P_new[:,1], 0, h-1)
+
+        # ---- LOCK ANCHORS: keep corner-near control points fixed ----
+        if self.cp_anchor_idx:
+            anchor_idx = np.fromiter(self.cp_anchor_idx, dtype=np.int64)
+            # Safety: clamp to bounds 0..len-1
+            anchor_idx = anchor_idx[(anchor_idx >= 0) & (anchor_idx < P_new.shape[0])]
+            if anchor_idx.size > 0:
+                P_new[anchor_idx] = P[anchor_idx]
 
         # evaluate score
         new_score = self._cp_score(P_new)
@@ -1369,6 +1585,7 @@ class MapEnhancerWizard(tk.Tk):
         self.cp_working_map = None
         self.cp_last_score = None
         self.cp_need_prepare = False
+        self.cp_anchor_idx = set()
 
         self._push_history_snapshot()
         self.update_preview()
