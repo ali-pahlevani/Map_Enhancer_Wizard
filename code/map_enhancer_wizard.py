@@ -154,6 +154,30 @@ class MapEnhancerWizard(tk.Tk):
         self.cp_max_iters = tk.IntVar(value=100)
         self.cp_tol = tk.DoubleVar(value=1e-3)      # improvement tolerance
 
+        # ---- Corner-anchors tunables (UI in Optimization tab) ----
+        self.ca_angle_min = tk.DoubleVar(value=85.0)   # degrees
+        self.ca_angle_max = tk.DoubleVar(value=95.0)   # degrees
+        self.ca_quality   = tk.DoubleVar(value=0.05)   # goodFeaturesToTrack qualityLevel
+        self.ca_min_bcnt  = tk.IntVar(value=5)         # minimum 2nd-peak count
+        self.ca_min_bratio= tk.DoubleVar(value=0.20)   # minimum ratio of 2nd to 1st peak
+
+        # Rebuild anchors automatically when these change (if CPs exist)
+        self._ca_after_id = None
+        def _rebuild_on_change(*_):
+            # Debounce to avoid firing while entry is temporarily empty
+            if self._ca_after_id is not None:
+                try:
+                    self.after_cancel(self._ca_after_id)
+                except Exception:
+                    pass
+            self._ca_after_id = self.after(150, self._rebuild_anchors_if_any)
+
+        for v in [self.ca_angle_min, self.ca_angle_max, self.ca_quality, self.ca_min_bcnt, self.ca_min_bratio]:
+            try:
+                v.trace_add("write", _rebuild_on_change)
+            except Exception:
+                pass
+
         self.cp_points = []      # [(x,y), ...] current (float)
         self.cp_init = []        # initial positions (float)
         self.cp_prev = []        # previous positions (float) for erase step
@@ -193,6 +217,11 @@ class MapEnhancerWizard(tk.Tk):
                 v.trace_add("write", mark_dirty)
             except Exception:
                 pass
+
+    def _rebuild_anchors_if_any(self):
+        if self.cp_points:
+            self._assign_anchor_points()
+            self.update_preview()
 
     # ------------------------- UI -------------------------
 
@@ -414,6 +443,35 @@ class MapEnhancerWizard(tk.Tk):
         put(1,1,"Neighbor radius (px):", self.cp_nb_radius, tip="Neighbors within this radius influence each other.")
         put(1,2,"Max iters:", self.cp_max_iters, tip="Max optimization iterations.")
         put(2,0,"Tol (Δscore):", self.cp_tol, tip="Stop if improvement below this value.")
+
+        # --- Corner Anchor Settings ---
+        anchorf = ttk.Labelframe(tab_opt, text="Corner Anchor Settings", padding=10, style="Card.TLabelframe")
+        anchorf.pack(fill="x", pady=(0,8))
+
+        # Angle band (min/max)
+        row1 = ttk.Frame(anchorf, style="TFrame"); row1.pack(fill="x", pady=4)
+        ttk.Label(row1, text="Angle band (°):").pack(side="left")
+        e_min = ttk.Entry(row1, width=6, textvariable=self.ca_angle_min); e_min.pack(side="left", padx=(6,4))
+        ttk.Label(row1, text="to").pack(side="left")
+        e_max = ttk.Entry(row1, width=6, textvariable=self.ca_angle_max); e_max.pack(side="left", padx=(6,0))
+
+        # Corner detector qualityLevel
+        row2 = ttk.Frame(anchorf, style="TFrame"); row2.pack(fill="x", pady=4)
+        ttk.Label(row2, text="qualityLevel:").pack(side="left")
+        e_q = ttk.Entry(row2, width=8, textvariable=self.ca_quality); e_q.pack(side="left", padx=(6,0))
+        ttk.Label(row2, text="(0..1; higher = stricter)").pack(side="left", padx=(6,0))
+
+        # Second-peak requirement: min count & min ratio
+        row3 = ttk.Frame(anchorf, style="TFrame"); row3.pack(fill="x", pady=4)
+        ttk.Label(row3, text="2nd peak ≥").pack(side="left")
+        e_cnt = ttk.Entry(row3, width=6, textvariable=self.ca_min_bcnt); e_cnt.pack(side="left", padx=(6,4))
+        ttk.Label(row3, text="or ≥").pack(side="left")
+        e_ratio = ttk.Entry(row3, width=6, textvariable=self.ca_min_bratio); e_ratio.pack(side="left", padx=(6,4))
+        ttk.Label(row3, text="× 1st peak").pack(side="left")
+
+        # Manual rebuild (useful after Generate CPs)
+        row4 = ttk.Frame(anchorf, style="TFrame"); row4.pack(fill="x", pady=6)
+        ttk.Button(row4, text="Rebuild Anchors Now", command=self._rebuild_anchors_if_any, style="Modern.TButton").pack(side="left")
 
         runf = ttk.Labelframe(tab_opt, text="Run", padding=10, style="Card.TLabelframe")
         runf.pack(fill="x")
@@ -1269,6 +1327,42 @@ class MapEnhancerWizard(tk.Tk):
         k = max(5, int(0.2 * len(dmins)))  # be robust to outliers
         return max(4.0, float(np.mean(dmins[:k])))
 
+    def _get_ca_vals(self):
+        """
+        Safely read Corner Anchor UI values with sensible defaults and clamping.
+        Returns: (amin, amax, quality, min_bcnt, min_bratio)
+        """
+        try:
+            amin = safe_float(self.ca_angle_min.get() or 85.0, 85.0)
+        except Exception:
+            amin = 85.0
+        try:
+            amax = safe_float(self.ca_angle_max.get() or 95.0, 95.0)
+        except Exception:
+            amax = 95.0
+        try:
+            quality = safe_float(self.ca_quality.get() or 0.05, 0.05)
+        except Exception:
+            quality = 0.05
+        try:
+            min_bcnt = safe_int(self.ca_min_bcnt.get() or 5, 5)
+        except Exception:
+            min_bcnt = 5
+        try:
+            min_bratio = safe_float(self.ca_min_bratio.get() or 0.20, 0.20)
+        except Exception:
+            min_bratio = 0.20
+
+        # Clamp & sanitize
+        quality   = clamp(quality, 0.0, 1.0)
+        min_bcnt  = clamp(min_bcnt, 0, 1_000_000)
+        min_bratio= clamp(min_bratio, 0.0, 1.0)
+        amin      = clamp(amin, 0.0, 180.0)
+        amax      = clamp(amax, 0.0, 180.0)
+        if amin > amax:
+            amin, amax = amax, amin
+        return amin, amax, quality, min_bcnt, min_bratio
+
     def _compute_edges_and_orientation(self, base_gray_0_255):
         """
         Precompute edge map and per-pixel gradient orientation (0..180 degrees).
@@ -1315,8 +1409,9 @@ class MapEnhancerWizard(tk.Tk):
         a_idx, b_idx = int(top2_idx[0]), int(top2_idx[1])
         a_cnt, b_cnt = int(hist[a_idx]), int(hist[b_idx])
 
-        # Require the second peak to be meaningful
-        if b_cnt < max(5, 0.20 * a_cnt): # 8, 0.30 * a_cnt
+        # Require the second peak to be meaningful (user tunables)
+        _amin, _amax, _q, min_bcnt, min_bratio = self._get_ca_vals()
+        if b_cnt < max(min_bcnt, min_bratio * a_cnt):
             return False
 
         # Bin centers (degrees)
@@ -1327,7 +1422,9 @@ class MapEnhancerWizard(tk.Tk):
         if diff > 90.0:
             diff = 180.0 - diff  # acute equivalent
 
-        return (85.0 <= diff <= 95.0) # 80.0 <= diff <= 100.0
+        # Use UI-controlled band (safe)
+        amin, amax, _, _, _ = self._get_ca_vals()
+        return (amin <= diff <= amax)
 
     def _detect_corners(self, src_gray_0_255):
         """
@@ -1342,9 +1439,9 @@ class MapEnhancerWizard(tk.Tk):
 
             corners = cv2.goodFeaturesToTrack(
                 image=edges,
-                maxCorners=800,     # keep bounded
-                qualityLevel=0.05,  # slightly stricter #0.03
-                minDistance=6,      # spread them out a bit
+                maxCorners=800,                            # keep bounded
+                qualityLevel=self._get_ca_vals()[2],       # quality from safe getter
+                minDistance=6,                             # spread them out a bit
                 blockSize=5,
                 useHarrisDetector=True,
                 k=0.04
