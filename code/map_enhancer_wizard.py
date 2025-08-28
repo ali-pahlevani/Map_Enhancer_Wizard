@@ -89,7 +89,7 @@ class ToolTip:
             background="#ffffe0",
             relief=tk.SOLID,
             borderwidth=1,
-            font=("Arial", 10),
+            font=("Segoe UI", 10),
             padx=6,
             pady=4,
         )
@@ -144,12 +144,12 @@ class MapEnhancerWizard(tk.Tk):
         self.future = deque(maxlen=50)
 
         # --------- Kernel Control-Points optimizer state ---------
-        self.cp_n = tk.IntVar(value=150)            # number of control points
+        self.cp_n = tk.IntVar(value=2000)            # number of control points
         self.cp_kernel = tk.IntVar(value=5)         # odd size: 3,5,7,...
         self.cp_sigma = tk.DoubleVar(value=14.0)    # reserved for future
-        self.cp_alpha = tk.DoubleVar(value=0.08)    # step size per iter
+        self.cp_alpha = tk.DoubleVar(value=0.05)    # step size per iter
         self.cp_lc = tk.DoubleVar(value=2.0)        # line (pair) weight
-        self.cp_ls = tk.DoubleVar(value=0.2)        # neighbor Laplacian weight
+        self.cp_ls = tk.DoubleVar(value=0.08)        # neighbor Laplacian weight
         self.cp_nb_radius = tk.IntVar(value=8)     # neighbor radius (px)
         self.cp_max_iters = tk.IntVar(value=100)
         self.cp_tol = tk.DoubleVar(value=1e-3)      # improvement tolerance
@@ -194,24 +194,128 @@ class MapEnhancerWizard(tk.Tk):
     # ------------------------- UI -------------------------
 
     def _build_ui(self):
-        # Style
+        # ==== Modernize styling ====
         style = ttk.Style()
-        style.configure("TButton", font=("Arial", 11, "bold"))
-        style.configure("TLabel", font=("Arial", 11))
-        style.configure("Header.TLabel", font=("Arial", 12, "bold"))
-        style.configure("Small.TLabel", font=("Arial", 9))
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
 
-        # Layout
-        self.grid_columnconfigure(0, weight=0)
-        self.grid_columnconfigure(1, weight=1)
+        # Color palette (soft light with an accent)
+        ACCENT = "#3C82F6"   # blue
+        ACCENT_DK = "#2F6BCE"
+        SURFACE = "#F7F9FC"
+        CARD = "#FFFFFF"
+        TEXT = "#1F2937"
+        MUTED = "#6B7280"
+        BORDER = "#E5E7EB"
+
+        # Global widget styles
+        style.configure(".", font=("Segoe UI", 10))
+        style.configure("TLabel", background=SURFACE, foreground=TEXT)
+        style.configure("Header.TLabel", font=("Segoe UI", 11, "bold"), background=SURFACE, foreground=TEXT)
+        style.configure("Small.TLabel", font=("Segoe UI", 9), background=SURFACE, foreground=MUTED)
+
+        style.configure("TFrame", background=SURFACE)
+        style.configure("Card.TLabelframe", background=SURFACE, relief="flat")
+        style.configure("Card.TLabelframe.Label", background=SURFACE, foreground=TEXT, font=("Segoe UI", 10, "bold"))
+
+        style.configure("TNotebook", background=SURFACE, borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(14, 8), font=("Segoe UI", 10))
+        style.map("TNotebook.Tab", background=[("selected", CARD)], expand=[("selected", [1, 1, 1, 0])])
+
+        style.configure("Modern.TButton",
+                        font=("Segoe UI", 10, "bold"),
+                        padding=(10, 8),
+                        background=ACCENT,
+                        foreground="#FFFFFF",
+                        borderwidth=0)
+        style.map("Modern.TButton",
+                  background=[("active", ACCENT_DK), ("pressed", ACCENT_DK)])
+
+        style.configure("TCheckbutton", background=SURFACE, foreground=TEXT)
+        style.configure("TRadiobutton", background=SURFACE, foreground=TEXT)
+        style.configure("TScale", background=SURFACE)
+
+        self.configure(bg=SURFACE)
+
+        # ==== Layout: use a PanedWindow to enforce 25%/75% split ====
         self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=0)
+        self.grid_columnconfigure(0, weight=1)
 
-        # Left controls (with notebook)
-        controls = ttk.Frame(self, padding=(10, 10))
-        controls.grid(row=0, column=0, sticky="ns")
+        self.paned = tk.PanedWindow(self, orient="horizontal", sashwidth=6, bg=SURFACE, bd=0, sashrelief="flat")
+        self.paned.grid(row=0, column=0, sticky="nsew")
 
-        nb = ttk.Notebook(controls)
+        # Left pane (scrollable)
+        left_outer = ttk.Frame(self, style="TFrame")
+        self._build_left_scrollable(left_outer)
+        self.paned.add(left_outer, minsize=260)  # sensible minimum
+
+        # Right pane (canvas area)
+        right = ttk.Frame(self, padding=(4, 4), style="TFrame")
+        right.grid_rowconfigure(0, weight=1)
+        right.grid_columnconfigure(0, weight=1)
+        self.canvas = tk.Canvas(right, bg="#FAFAFF", highlightthickness=1, highlightbackground=BORDER)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.paned.add(right)
+
+        # Status bar (spans full width)
+        status = ttk.Frame(self, style="TFrame")
+        status.grid(row=1, column=0, sticky="ew")
+        status.grid_columnconfigure(1, weight=1)
+        border = tk.Frame(status, height=1, bg=BORDER)
+        border.grid(row=0, column=0, columnspan=3, sticky="ew")
+        ttk.Label(status, text="Zoom:", style="Small.TLabel").grid(row=1, column=0, sticky="w", padx=(8, 4), pady=6)
+        ttk.Label(status, textvariable=self.zoom_label_var, style="Small.TLabel").grid(row=1, column=1, sticky="w")
+        ttk.Label(status, textvariable=self.metrics_label_var, style="Small.TLabel").grid(row=1, column=2, sticky="e", padx=8)
+
+        # Enforce 25%/75% split whenever window size changes
+        self.bind("<Configure>", self._enforce_split_and_refresh)
+
+        # Mouse: middle button panning, wheel zoom
+        self.canvas.bind("<ButtonPress-2>", self._on_pan_start)   # middle press
+        self.canvas.bind("<B2-Motion>", self._on_pan_drag)        # middle drag
+        linux_mousewheel_bind(self.canvas, self._on_wheel)        # zoom on wheel
+
+        # Fit to window: Shift + double left-click (avoid conflict with node double-click)
+        self.canvas.bind("<Shift-Double-Button-1>", lambda e: self.fit_to_window())
+
+        # CP interactions: left click to pair toggle; double-click to remove all connections of a node
+        self.canvas.bind("<ButtonPress-1>", self._on_canvas_click)
+        self.canvas.bind("<Double-Button-1>", self._on_canvas_double_click)
+
+    def _build_left_scrollable(self, parent):
+        """Create the left controls inside a scrollable container so they never hide behind the canvas."""
+        # Scrollable shell
+        shell = ttk.Frame(parent, padding=(8, 8), style="TFrame")
+        shell.pack(fill="both", expand=True)
+
+        self.left_canvas = tk.Canvas(shell, highlightthickness=0, bg="#F7F9FC")
+
+        vscroll = ttk.Scrollbar(shell, orient="vertical", command=self.left_canvas.yview)
+        self.left_canvas.configure(yscrollcommand=vscroll.set)
+
+        self.left_canvas.grid(row=0, column=0, sticky="nsew")
+        vscroll.grid(row=0, column=1, sticky="ns")
+        shell.grid_rowconfigure(0, weight=1)
+        shell.grid_columnconfigure(0, weight=1)
+
+        # Frame inside canvas
+        self.controls_host = ttk.Frame(self.left_canvas, style="TFrame")
+        self.controls_host_id = self.left_canvas.create_window((0, 0), window=self.controls_host, anchor="nw")
+
+        # Make the interior width follow the viewport width
+        def _sync_width(event):
+            self.left_canvas.itemconfig(self.controls_host_id, width=event.width)
+        self.left_canvas.bind("<Configure>", _sync_width)
+
+        # Update scrollregion when content changes size
+        def _update_scrollregion(_=None):
+            self.left_canvas.configure(scrollregion=self.left_canvas.bbox("all"))
+        self.controls_host.bind("<Configure>", _update_scrollregion)
+
+        # Build notebook & controls inside controls_host
+        nb = ttk.Notebook(self.controls_host, style="TNotebook")
         self.nb = nb
         self.active_tab = "Filtering"
         self.show_cp_overlay = False
@@ -219,18 +323,18 @@ class MapEnhancerWizard(tk.Tk):
         nb.pack(fill="both", expand=True)
 
         # --- Tab: Filtering ---
-        tab_controls = ttk.Frame(nb, padding=(10, 10))
+        tab_controls = ttk.Frame(nb, padding=(10, 10), style="TFrame")
         nb.add(tab_controls, text="Filtering")
 
         # File actions
-        file_frame = ttk.LabelFrame(tab_controls, text="Map I/O", padding=10)
+        file_frame = ttk.Labelframe(tab_controls, text="Map I/O", padding=10, style="Card.TLabelframe")
         file_frame.pack(fill="x", expand=False)
-        ttk.Button(file_frame, text="Select Map Folder", command=self.select_folder).pack(fill="x", pady=4)
-        ttk.Button(file_frame, text="Save Enhanced Map", command=self.save_map).pack(fill="x", pady=4)
-        ttk.Button(file_frame, text="Fit to Window (F)", command=self.fit_to_window).pack(fill="x", pady=4)
+        ttk.Button(file_frame, text="Select Map Folder", command=self.select_folder, style="Modern.TButton").pack(fill="x", pady=4)
+        ttk.Button(file_frame, text="Save Enhanced Map", command=self.save_map, style="Modern.TButton").pack(fill="x", pady=4)
+        ttk.Button(file_frame, text="Fit to Window (F)", command=self.fit_to_window, style="Modern.TButton").pack(fill="x", pady=4)
 
         # Preview opts
-        preview_frame = ttk.LabelFrame(tab_controls, text="Preview", padding=10)
+        preview_frame = ttk.Labelframe(tab_controls, text="Preview", padding=10, style="Card.TLabelframe")
         preview_frame.pack(fill="x", expand=False, pady=(10, 0))
         for mode, label in [("original", "Original"), ("enhanced", "Enhanced"), ("side_by_side", "Side-by-Side")]:
             ttk.Radiobutton(preview_frame, text=label, value=mode, variable=self.preview_mode, command=self.update_preview).pack(anchor="w")
@@ -238,12 +342,12 @@ class MapEnhancerWizard(tk.Tk):
         ttk.Checkbutton(preview_frame, text="Invert View (visual only)", variable=self.invert_view, command=self.update_preview).pack(anchor="w")
 
         # Filters
-        filt = ttk.LabelFrame(tab_controls, text="Filters & Morphology", padding=10)
+        filt = ttk.Labelframe(tab_controls, text="Filters & Morphology", padding=10, style="Card.TLabelframe")
         filt.pack(fill="x", expand=False, pady=(10, 0))
 
         def add_slider(parent, text, var, from_, to_, step=1, cb=None, tooltip=None):
-            row = ttk.Frame(parent)
-            row.pack(fill="x", pady=4)
+            row = ttk.Frame(parent, style="TFrame")
+            row.pack(fill="x", pady=6)
             ttk.Label(row, text=text).pack(side="left")
             val_lbl = ttk.Label(row, textvariable=tk.StringVar(value=str(var.get())), width=6, anchor="e")
             val_lbl.pack(side="right")
@@ -273,26 +377,26 @@ class MapEnhancerWizard(tk.Tk):
         self._s_ero = add_slider(filt, "Erosion (px)", self.erosion_var, 0, 15, 1,
                                  cb=self.update_preview, tooltip="Thin obstacles / remove edge artifacts.")
 
-        act = ttk.LabelFrame(tab_controls, text="Actions", padding=10)
+        act = ttk.Labelframe(tab_controls, text="Actions", padding=10, style="Card.TLabelframe")
         act.pack(fill="x", expand=False, pady=(10, 0))
-        ttk.Button(act, text="Auto-Enhance (A)", command=self.auto_enhance).pack(fill="x", pady=4)
-        ttk.Button(act, text="Reset All Filters (R)", command=self.reset_filters).pack(fill="x", pady=4)
-        ttk.Button(act, text="Undo (Ctrl+Z)", command=self.undo).pack(fill="x", pady=4)
-        ttk.Button(act, text="Redo (Ctrl+Y)", command=self.redo).pack(fill="x", pady=4)
+        ttk.Button(act, text="Auto-Enhance (A)", command=self.auto_enhance, style="Modern.TButton").pack(fill="x", pady=4)
+        ttk.Button(act, text="Reset All Filters (R)", command=self.reset_filters, style="Modern.TButton").pack(fill="x", pady=4)
+        ttk.Button(act, text="Undo (Ctrl+Z)", command=self.undo, style="Modern.TButton").pack(fill="x", pady=4)
+        ttk.Button(act, text="Redo (Ctrl+Y)", command=self.redo, style="Modern.TButton").pack(fill="x", pady=4)
 
         # --- Tab: Optimization (Kernel Control Points) ---
-        tab_opt = ttk.Frame(nb, padding=(10, 10))
+        tab_opt = ttk.Frame(nb, padding=(10, 10), style="TFrame")
         nb.add(tab_opt, text="Optimization")
 
-        genf = ttk.LabelFrame(tab_opt, text="Control Points", padding=10)
+        genf = ttk.Labelframe(tab_opt, text="Control Points", padding=10, style="Card.TLabelframe")
         genf.pack(fill="x", pady=(0,8))
         ttk.Label(genf, text="N points:").grid(row=0, column=0, sticky="w")
         ttk.Entry(genf, width=8, textvariable=self.cp_n).grid(row=0, column=1, sticky="w", padx=4)
-        ttk.Button(genf, text="Generate (occupied only)", command=self._cp_generate).grid(row=0, column=2, padx=6)
-        ttk.Button(genf, text="Clear Pairs", command=self._cp_clear_pairs).grid(row=0, column=3, padx=6)
+        ttk.Button(genf, text="Generate (occupied only)", command=self._cp_generate, style="Modern.TButton").grid(row=0, column=2, padx=6)
+        ttk.Button(genf, text="Clear Pairs", command=self._cp_clear_pairs, style="Modern.TButton").grid(row=0, column=3, padx=6)
         ttk.Label(genf, text="Click two red points to toggle a green constraint line. Double-click a node to remove all its connections.").grid(row=1, column=0, columnspan=4, sticky="w", pady=(6,0))
 
-        el = ttk.LabelFrame(tab_opt, text="Kernel & Optimization Parameters", padding=10)
+        el = ttk.Labelframe(tab_opt, text="Kernel & Optimization Parameters", padding=10, style="Card.TLabelframe")
         el.pack(fill="x", pady=(0,8))
 
         def put(r,c,txt,var,w=8,tip=None):
@@ -308,58 +412,43 @@ class MapEnhancerWizard(tk.Tk):
         put(1,2,"Max iters:", self.cp_max_iters, tip="Max optimization iterations.")
         put(2,0,"Tol (Δscore):", self.cp_tol, tip="Stop if improvement below this value.")
 
-        runf = ttk.LabelFrame(tab_opt, text="Run", padding=10)
+        runf = ttk.Labelframe(tab_opt, text="Run", padding=10, style="Card.TLabelframe")
         runf.pack(fill="x")
-        ttk.Button(runf, text="Start", command=self._cp_start).grid(row=0, column=0, padx=4, pady=2, sticky="ew")
-        ttk.Button(runf, text="Step Once", command=self._cp_step_once).grid(row=0, column=1, padx=4, pady=2, sticky="ew")
-        ttk.Button(runf, text="Stop", command=self._cp_stop).grid(row=0, column=2, padx=4, pady=2, sticky="ew")
-        ttk.Button(runf, text="Apply to Enhanced", command=self._cp_apply).grid(row=1, column=0, columnspan=2, padx=4, pady=6, sticky="ew")
-        ttk.Button(runf, text="Revert Working", command=self._cp_revert).grid(row=1, column=2, padx=4, pady=6, sticky="ew")
+        ttk.Button(runf, text="Start", command=self._cp_start, style="Modern.TButton").grid(row=0, column=0, padx=4, pady=2, sticky="ew")
+        ttk.Button(runf, text="Step Once", command=self._cp_step_once, style="Modern.TButton").grid(row=0, column=1, padx=4, pady=2, sticky="ew")
+        ttk.Button(runf, text="Stop", command=self._cp_stop, style="Modern.TButton").grid(row=0, column=2, padx=4, pady=2, sticky="ew")
+        ttk.Button(runf, text="Apply to Enhanced", command=self._cp_apply, style="Modern.TButton").grid(row=1, column=0, columnspan=2, padx=4, pady=6, sticky="ew")
+        ttk.Button(runf, text="Revert Working", command=self._cp_revert, style="Modern.TButton").grid(row=1, column=2, padx=4, pady=6, sticky="ew")
 
-        stat = ttk.LabelFrame(tab_opt, text="Status", padding=10)
+        stat = ttk.Labelframe(tab_opt, text="Status", padding=10, style="Card.TLabelframe")
         stat.pack(fill="x")
         self.lbl_iter = ttk.Label(stat, text="iter: 0"); self.lbl_iter.grid(row=0, column=0, sticky="w")
         self.lbl_score = ttk.Label(stat, text="score: -"); self.lbl_score.grid(row=0, column=1, sticky="w", padx=(12,0))
         ttk.Label(stat, text="Tip: middle-mouse to pan, mouse wheel to zoom. 'F' to fit window.").grid(row=1, column=0, columnspan=3, sticky="w", pady=(6,0))
 
         # --- Tab: Metadata ---
-        tab_meta = ttk.Frame(nb, padding=(10, 10))
+        tab_meta = ttk.Frame(nb, padding=(10, 10), style="TFrame")
         nb.add(tab_meta, text="Metadata")
         self.meta_text = tk.Text(tab_meta, width=36, height=18, wrap="none")
-        self.meta_text.configure(font=("Courier New", 10))
+        self.meta_text.configure(font=("Consolas", 10), bd=0, highlightthickness=1, highlightbackground="#E5E7EB")
         self.meta_text.pack(fill="both", expand=True)
 
-        # Canvas & status
-        right = ttk.Frame(self, padding=(4, 4))
-        right.grid(row=0, column=1, sticky="nsew")
-        right.grid_rowconfigure(0, weight=1)
-        right.grid_columnconfigure(0, weight=1)
-
-        self.canvas = tk.Canvas(right, bg="white", highlightthickness=1, highlightbackground="#d0d0d0")
-        self.canvas.grid(row=0, column=0, sticky="nsew")
-
-        # Status bar
-        status = ttk.Frame(self, relief=tk.SUNKEN)
-        status.grid(row=1, column=0, columnspan=2, sticky="ew")
-        status.grid_columnconfigure(1, weight=1)
-        ttk.Label(status, text="Zoom:").grid(row=0, column=0, sticky="w", padx=(8, 4))
-        ttk.Label(status, textvariable=self.zoom_label_var).grid(row=0, column=1, sticky="w")
-        ttk.Label(status, textvariable=self.metrics_label_var).grid(row=0, column=2, sticky="e", padx=8)
-
-        # Bind
-        self.bind("<Configure>", lambda e: self.update_preview())
-
-        # Mouse: middle button panning, wheel zoom
-        self.canvas.bind("<ButtonPress-2>", self._on_pan_start)   # middle press
-        self.canvas.bind("<B2-Motion>", self._on_pan_drag)        # middle drag
-        linux_mousewheel_bind(self.canvas, self._on_wheel)        # zoom on wheel
-
-        # Fit to window: Shift + double left-click (avoid conflict with node double-click)
-        self.canvas.bind("<Shift-Double-Button-1>", lambda e: self.fit_to_window())
-
-        # CP interactions: left click to pair toggle; double-click to remove all connections of a node
-        self.canvas.bind("<ButtonPress-1>", self._on_canvas_click)
-        self.canvas.bind("<Double-Button-1>", self._on_canvas_double_click)
+    # Keep the left/right panes exactly 25% / 75% of window width
+    def _enforce_split_and_refresh(self, e):
+        # Ignore events from child widgets that report tiny widths/heights
+        try:
+            total_w = self.winfo_width()
+            if total_w <= 1:
+                return
+            left_w = int(total_w * 0.25)
+            # Only reposition sash if it has actually moved (prevents jitter)
+            if self.paned.sashcoord(0)[0] != left_w:
+                # place the sash so that left pane width == 25% of window width
+                self.paned.sash_place(0, left_w, 1)
+        except Exception:
+            pass
+        # Update preview on resize as before
+        self.update_preview()
 
     def _bind_keys(self):
         self.bind("f", lambda e: self.fit_to_window())
