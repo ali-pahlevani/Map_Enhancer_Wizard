@@ -13,7 +13,7 @@ The wizard guides users through a step-by-step process, supporting map loading, 
 * **Kernel Optimization**: Optimize map features using control points with user-defined constraints and corner anchoring.
 * **Interactive Canvas**: Add/remove constraint pairs, pan/zoom, and preview changes in real-time.
 * **Corner Anchor Detection**: Automatically detect and fix corner points to preserve map structure.
-* **History and Undo**: Save snapshotsソーサル snapshots and revert changes.
+* **History and Undo**: Save snapshots and revert changes.
 * **Export Options**: Save enhanced maps as *.yaml* and *.pgm* files.
 * **Coming Soon**: Automation features, AI-powered enhancements, and 3D map support.
 
