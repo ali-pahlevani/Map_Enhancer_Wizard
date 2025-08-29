@@ -123,14 +123,18 @@ The wizard provides a tabbed interface for map enhancement. Below is a step-by-s
 * **Apply/Revert**: Click *Apply to Enhanced* to save changes or *Revert Working* to undo.
 * **Canvas Controls**: Same as filtering (zoom, pan, fit).
 
-<img width="1857" height="1048" alt="Optimization" src="https://github.com/user-attachments/assets/0fe744f3-6ae5-4f06-a868-0dde060fb924" />
+<img width="1847" height="1051" alt="Optimization_1" src="https://github.com/user-attachments/assets/a9a5923d-2d0c-4c0b-b284-cce048d44967" />
+
+<img width="1847" height="1051" alt="Optimization_2" src="https://github.com/user-attachments/assets/eb0c1546-5c92-44d1-a870-a6c9646cad1f" />
 
 ### Step 4: Save Enhanced Map
 
 * Click *File* > *Save Enhanced Map* to export the optimized map as *.yaml* and *.pgm* files.
 * Choose a directory to save the files.
 
-<img width="1857" height="1048" alt="Save Map" src="https://github.com/user-attachments/assets/608c0558-aa63-478e-a97b-4ef6fc729e13" />
+<img width="1847" height="1051" alt="SaveMap_1" src="https://github.com/user-attachments/assets/9195f472-8be8-4756-886e-fb8f798fe510" />
+
+<img width="1847" height="1051" alt="SaveMap_2" src="https://github.com/user-attachments/assets/31bcbce2-b683-442b-8119-a8e5918332ef" />
 
 ## Future Visions
 
