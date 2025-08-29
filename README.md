@@ -1,81 +1,173 @@
-# Map Enhancer Wizard (V1)
+# Map Enhancer Wizard (V2)
 
-**Map Enhancer Wizard** is a tool designed to enhance 2D Occupancy Grid maps, providing users with an easy way to improve the quality and usability of their maps through a user-friendly interface.
+![Map Enhancer Wizard Banner](https://github.com/user-attachments/assets/4dbd4538-ddf7-4dc9-af1a-184c2ab03395)
 
-This is **version 1** of the tool. Future versions will include:
+**Map Enhancer Wizard** is a *Tkinter*-based graphical user interface (*GUI*) application designed to enhance 2D Occupancy Grid maps for robotics and navigation applications. It provides an intuitive interface to load, filter, and optimize maps, with features like kernel-based optimization, corner anchor detection, and interactive control point manipulation. The tool is ideal for refining maps used in *SLAM* (Simultaneous Localization and Mapping) or robotic path planning, offering real-time previews and customizable enhancement parameters.
 
-- **Additional filters** for more versatile map enhancements
-- **Automation features** to streamline the enhancement process
-- **AI-powered enhancements** for intelligent map improvements
-- Support for **3D maps**
- 
-## Preview
+The wizard guides users through a step-by-step process, supporting map loading, filtering (erosion, dilation, Gaussian blur), kernel optimization, and saving enhanced maps in *YAML* and image formats (e.g., *.pgm*).
 
-![Map Enhancer Wizard Preview](https://github.com/user-attachments/assets/4dbd4538-ddf7-4dc9-af1a-184c2ab03395)
+## Key Features
 
-## Dependencies
+* **Map Loading**: Load 2D Occupancy Grid maps from *.yaml* files with associated *.pgm* images.
+* **Filtering**: Apply morphological operations (erosion, dilation) and Gaussian blur with adjustable parameters.
+* **Kernel Optimization**: Optimize map features using control points with user-defined constraints and corner anchoring.
+* **Interactive Canvas**: Add/remove constraint pairs, pan/zoom, and preview changes in real-time.
+* **Corner Anchor Detection**: Automatically detect and fix corner points to preserve map structure.
+* **History and Undo**: Save snapshotsソーサル snapshots and revert changes.
+* **Export Options**: Save enhanced maps as *.yaml* and *.pgm* files.
+* **Coming Soon**: Automation features, AI-powered enhancements, and 3D map support.
 
-To use this tool, you need to have the following Python packages installed:
+## Code Structure
 
-- opencv-python
-- pillow
-- pyyaml
-- numpy
+The codebase is organized in a modular structure for maintainability, with classes and utilities separated by functionality. Here's the directory layout:
 
-You can install these dependencies using **pip**:
-
-```bash
-pip install opencv-python pillow pyyaml numpy
+```
+Map_Enhancer_Wizard/
+├── classes/
+│   ├── map_enhancer_wizard.py  # Main wizard class handling UI and map processing
+│   ├── optimizer.py  # Kernel optimization and corner anchor detection logic
+│   ├── tooltip.py  # Tooltip functionality for UI elements
+├── util/
+│   ├── clamp.py  # Utility to clamp values within a range
+│   ├── cv_to_photo.py  # Converts OpenCV images to Tkinter PhotoImage
+│   ├── linux_mousewheel_bind.py  # Cross-platform mouse wheel event binding
+│   ├── morphological_kernel.py  # Generates morphological kernels for OpenCV
+│   ├── safe_float.py  # Safely converts values to float
+│   ├── safe_int.py  # Safely converts values to integer
+├── main.py  # Entry point to run the application
+└── README.md
 ```
 
-## Usage
+* **`classes/`**: Core application logic, including the main wizard, optimization, and tooltip classes.
+* **`util/`**: Shared utility functions for image conversion, value clamping, and platform-specific bindings.
+* **`main.py`**: The main script to launch the wizard.
 
-The main file to run is `map_enhancer_wizard.py`. To start the wizard, simply execute the following command in your **terminal**:
+## Installation and Usage
 
-```bash
-python3 map_enhancer_wizard.py
-```
+### Prerequisites
 
-Follow the on-screen **instructions** to load your 2D Occupancy Grid map and apply enhancements.
+* **Python**: *3.8+* (tested on *3.8* and *3.10*).
+* **Dependencies**: Install required libraries:
+  ```bash
+  pip install opencv-python pillow pyyaml numpy
+  ```
+* **Map Files**: Ensure 2D Occupancy Grid maps include a *.yaml* file and a corresponding *.pgm* image in the same directory.
 
-The wizard will guide you through the process of enhancing your map, allowing you to choose from available options and preview changes before saving.
+### Setup
 
-+ **Note:** Ensure your 2D Occupancy Grid map is in a compatible format. The tool expects a **.yaml** file along with its corresponding image file (e.g., **.pgm**). Basically, you’ll need to **double-click** and select the folder that **contains both** the .yaml and image file of your map.
+1. **Clone the Repository**:
+   ```bash
+   git clone https://github.com/ali-pahlevani/Map_Enhancer_Wizard.git
+   cd Map_Enhancer_Wizard
+   ```
 
-## Examples
+2. **Run the Application**:
+   Run the main file:
+   ```bash
+   python3 main.py
+   ```
 
-Below are example collages demonstrating the enhancement results. Each collage includes **four images**: **two** showing the **occupancy map** before and after enhancement, and **two** showing the corresponding **cost maps** before and after enhancement.
+### Troubleshooting Installation
 
-### Example 1
-![Example 1: Occupancy and Cost Map Enhancement](https://github.com/user-attachments/assets/4149fe0b-3bf4-4f04-b520-a2f0fa883235)
+* **Tkinter Errors**: Ensure Tkinter is installed (usually included with Python; on Linux, install `python3-tk`).
+* **OpenCV Errors**: Verify `opencv-python` is installed correctly (`pip install opencv-python`).
+* **Map Loading Issues**: Ensure the *.yaml* file specifies the correct image file path and that both files are in the same directory.
+* **Display Issues**: On *WSL* or Linux, ensure a display server is running (e.g., `export DISPLAY=:0` or use an *X server* like *Xming*).
 
-### Example 2
-![Example 2: Occupancy and Cost Map Enhancement](https://github.com/user-attachments/assets/0fe744f3-6ae5-4f06-a868-0dde060fb924)
+## Tutorial: Enhancing a 2D Occupancy Grid Map
 
-### Example 3
-![Example 3: Occupancy and Cost Map Enhancement](https://github.com/user-attachments/assets/608c0558-aa63-478e-a97b-4ef6fc729e13)
+The wizard provides a tabbed interface for map enhancement. Below is a step-by-step guide to using the tool.
 
-## Limitations and Known Issues
+### Step 1: Load Map
 
-As this is version 1, there are some **limitations**:
+* **Open Map**: Click *File* > *Open Map* and select a *.yaml* file containing map metadata and a *.pgm* image.
+* The map appears in the *Original* tab of the canvas.
+* **Note**: The *.yaml* file must reference a valid *.pgm* image in the same directory.
 
-- Limited set of enhancement filters
-- Only supports 2D Occupancy Grid maps
-- No automation or AI features yet
-- May not handle very large maps efficiently
+<img width="1857" height="1048" alt="Load Map" src="https://github.com/user-attachments/assets/4dbd4538-ddf7-4dc9-af1a-184c2ab03395" />
 
-If you encounter any issues or have suggestions for future versions, please **open an issue** on the GitHub repository.
+### Step 2: Apply Filters
+
+* Switch to the *Filtering* tab.
+* **Adjust Parameters**:
+  * **Erosion/Dilation Size**: Set kernel size for morphological operations (odd numbers, e.g., *3*, *5*).
+  * **Gaussian Blur Size**: Set blur kernel size (odd numbers, e.g., *3*, *5*).
+  * **Gaussian Sigma**: Adjust blur strength (e.g., *0.0* for no blur).
+* **Apply Filters**: Click *Apply* to process the map and view results in the *Filtered* tab.
+* **Canvas Controls**: Zoom with the mouse wheel, pan with the middle mouse button, press *F* to fit the window.
+
+<img width="1857" height="1048" alt="Filtering" src="https://github.com/user-attachments/assets/4149fe0b-3bf4-4f04-b520-a2f0fa883235" />
+
+### Step 3: Optimize Map
+
+* Switch to the *Optimization* tab.
+* **Generate Control Points**:
+  * Set *N points* (e.g., *2000*) and click *Generate (occupied only)* to create control points on occupied (black) pixels.
+* **Add Constraints**:
+  * Click two red control points on the canvas to toggle a green constraint line.
+  * Double-click a point to remove its connections.
+* **Adjust Parameters**:
+  * **Kernel Size**: Size of kernels carried by control points (odd, e.g., *5*).
+  * **Step α**: Gradient step size (e.g., *0.05*).
+  * **Line Weight λc**: Constraint strength (e.g., *2.0*).
+  * **Elastic Weight λs**: Neighbor smoothing (e.g., *0.08*).
+  * **Neighbor Radius**: Influence radius (e.g., *8* pixels).
+  * **Max Iters/Tol**: Optimization limits (e.g., *100*, *1e-3*).
+* **Corner Anchor Settings**:
+  * **Angle Band**: Range for corner detection (e.g., *85°–95°*).
+  * **Quality Level**: Corner strictness (0–1, e.g., *0.05*).
+  * **2nd Peak**: Minimum count or ratio for secondary angle peak (e.g., *5*, *0.20*).
+* **Run Optimization**:
+  * Click *Start* for continuous optimization, *Step Once* for single iteration, or *Stop* to halt.
+  * View progress in *Status* (iteration count, score).
+* **Apply/Revert**: Click *Apply to Enhanced* to save changes or *Revert Working* to undo.
+* **Canvas Controls**: Same as filtering (zoom, pan, fit).
+
+<img width="1857" height="1048" alt="Optimization" src="https://github.com/user-attachments/assets/0fe744f3-6ae5-4f06-a868-0dde060fb924" />
+
+### Step 4: Save Enhanced Map
+
+* Click *File* > *Save Enhanced Map* to export the optimized map as *.yaml* and *.pgm* files.
+* Choose a directory to save the files.
+
+<img width="1857" height="1048" alt="Save Map" src="https://github.com/user-attachments/assets/608c0558-aa63-478e-a97b-4ef6fc729e13" />
+
+## Future Visions
+
+**Map Enhancer Wizard** is a foundation for an open-source 2D map enhancement tool. Planned enhancements include:
+
+* **Additional Filters**: Advanced morphological and AI-based processing.
+* **Automation**: One-click map enhancement workflows.
+* **3D Map Support**: Extend to 3D occupancy grids and point clouds.
+* **Performance Optimizations**: Faster processing for large maps.
+* **UI Enhancements**: Improved canvas controls and undo/redo functionality.
+* **And definitely a lot more!!!**
+
+I’d **love collaborations**! Contribute via pull requests on *GitHub* for bug fixes, new features, or documentation improvements. Reach out via *GitHub Issues* for questions, suggestions, or partnership ideas.
 
 ## Contributing
 
-Contributions are welcome! If you'd like to add new features, fix bugs, or improve the documentation, please **fork the repository** and submit a **pull request**.
+Contributions are welcome! To contribute:
 
-Please ensure your code follows the project's coding standards and includes appropriate tests.
+1. Fork the repository.
+2. Create a branch (`git checkout -b feature/your-feature`).
+3. Commit changes (`git commit -m "Add your feature"`).
+4. Push to the branch (`git push origin feature/your-feature`).
+5. Open a pull request.
 
-## Support
+Please include tests and documentation updates. For major changes, discuss in a *GitHub Issue* first.
 
-If you have any questions, please let me know: **a.pahlevani1998@gmail.com**
+## Limitations and Known Issues
 
-+ Also, please don't forget to check out our **website** at: **https://www.SLAMbotics.org**
+* Limited to 2D Occupancy Grid maps (*.yaml* + *.pgm*).
+* No AI or automation features in this version.
+* Large maps (>50000 pixels) may require downsampling for control point generation.
+* Corner anchor detection may miss subtle corners (adjust *qualityLevel* or angle band).
 
-## Please stay tuned for the next versions of the app.
+Report issues or suggestions on the *GitHub* repository.
+
+---
+
++ If you have any questions, please let me know: **a.pahlevani1998@gmail.com**
+
++ Also, don't forget to check out our **website** at: **https://www.SLAMbotics.org**

@@ -1,0 +1,7 @@
+# ignore standalone code (old version)
+standalone_code/
+
+# ignore __pycache_
+code/__pycache__/
+code/utils/__pycache__/
+code/classes/__pycache__/
