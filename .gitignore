@@ -5,6 +5,3 @@ code/standalone_code/
 code/__pycache__/
 code/utils/__pycache__/
 code/classes/__pycache__/
-
-# ignore examples directory
-examples/
