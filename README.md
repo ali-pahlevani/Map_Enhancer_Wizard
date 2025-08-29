@@ -1,6 +1,6 @@
 # Map Enhancer Wizard (V2)
 
-![Map Enhancer Wizard Banner](https://github.com/user-attachments/assets/4dbd4538-ddf7-4dc9-af1a-184c2ab03395)
+<img width="1847" height="1051" alt="Map Enhancer Wizard Banner" src="https://github.com/user-attachments/assets/c11b2135-a6a7-41ce-82ab-2d8217158592" />
 
 **Map Enhancer Wizard** is a *Tkinter*-based graphical user interface (*GUI*) application designed to enhance 2D Occupancy Grid maps for robotics and navigation applications. It provides an intuitive interface to load, filter, and optimize maps, with features like kernel-based optimization, corner anchor detection, and interactive control point manipulation. The tool is ideal for refining maps used in *SLAM* (Simultaneous Localization and Mapping) or robotic path planning, offering real-time previews and customizable enhancement parameters.
 
@@ -84,7 +84,7 @@ The wizard provides a tabbed interface for map enhancement. Below is a step-by-s
 * The map appears in the *Original* tab of the canvas.
 * **Note**: The *.yaml* file must reference a valid *.pgm* image in the same directory.
 
-<img width="1857" height="1048" alt="Load Map" src="https://github.com/user-attachments/assets/4dbd4538-ddf7-4dc9-af1a-184c2ab03395" />
+<img width="1847" height="1051" alt="Load Map" src="https://github.com/user-attachments/assets/5cb10ae2-ac0a-4671-b6e7-299dff8e3c10" />
 
 ### Step 2: Apply Filters
 
@@ -96,7 +96,7 @@ The wizard provides a tabbed interface for map enhancement. Below is a step-by-s
 * **Apply Filters**: Click *Apply* to process the map and view results in the *Filtered* tab.
 * **Canvas Controls**: Zoom with the mouse wheel, pan with the middle mouse button, press *F* to fit the window.
 
-<img width="1857" height="1048" alt="Filtering" src="https://github.com/user-attachments/assets/4149fe0b-3bf4-4f04-b520-a2f0fa883235" />
+<img width="1847" height="1051" alt="Filtering" src="https://github.com/user-attachments/assets/d97f9c77-0c0f-45eb-854c-3e5e0f451715" />
 
 ### Step 3: Optimize Map
 
