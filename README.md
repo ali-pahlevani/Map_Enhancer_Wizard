@@ -58,7 +58,7 @@ Map_Enhancer_Wizard/
 1. **Clone the Repository**:
    ```bash
    git clone https://github.com/ali-pahlevani/Map_Enhancer_Wizard.git
-   cd Map_Enhancer_Wizard
+   cd Map_Enhancer_Wizard/code
    ```
 
 2. **Run the Application**:
